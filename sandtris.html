@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sandtris — Tetris with Sand Physics</title>
+<style>
+  html, body {
+    margin: 0; height: 100%;
+    background: #0d1018; color: #cdd6f4;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    user-select: none;
+  }
+  h1 { margin: 8px 0 4px; font-size: 18px; letter-spacing: 2px; color: #f5c2e7; }
+  #wrap { display: flex; gap: 18px; align-items: flex-start; }
+  canvas { background: #11141d; border: 2px solid #313244; image-rendering: pixelated; }
+  #side { font-size: 13px; line-height: 1.7; min-width: 150px; }
+  #score { font-size: 26px; color: #a6e3a1; }
+  .k { color: #89b4fa; }
+  #over { color: #f38ba8; font-weight: bold; min-height: 18px; }
+</style>
+</head>
+<body>
+  <h1>S A N D T R I S</h1>
+  <div id="wrap">
+    <canvas id="c"></canvas>
+    <div id="side">
+      <div>SCORE</div>
+      <div id="score">0</div>
+      <div id="over"></div>
+      <hr style="border-color:#313244">
+      <div><span class="k">← →</span> move</div>
+      <div><span class="k">↑</span> rotate</div>
+      <div><span class="k">↓</span> soft drop</div>
+      <div><span class="k">space</span> hard drop</div>
+      <div><span class="k">R</span> restart</div>
+      <hr style="border-color:#313244">
+      <div style="color:#9399b2;font-size:11px;line-height:1.5">
+        Blocks dissolve into sand and fall under gravity.
+        A line of one color clears when it bridges the
+        <b>left wall to the right wall</b>.
+      </div>
+    </div>
+  </div>
+
+<script>
+// ---------- Grid / sand cellular automaton ----------
+const CELL = 5;            // pixel size of one sand grain
+const COLS = 80;           // grid width  in grains
+const ROWS = 150;          // grid height in grains
+const BLOCK = 8;           // grains per tetromino square (8x8)
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = COLS * CELL;
+canvas.height = ROWS * CELL;
+
+// 0 = empty, otherwise a color index (1..N). Stored as flat array.
+const grid = new Int8Array(COLS * ROWS);
+const idx = (x, y) => y * COLS + x;
+
+// Distinct, well-separated colors so "matching" is meaningful.
+const COLORS = [
+  null,
+  '#f38ba8', // red
+  '#fab387', // orange
+  '#f9e2af', // yellow
+  '#a6e3a1', // green
+  '#89dceb', // cyan
+  '#cba6f7', // purple
+];
+
+// Slight per-grain brightness jitter for a sandy texture.
+const shade = new Float32Array(COLS * ROWS);
+
+// ---------- Tetromino pieces ----------
+const SHAPES = [
+  [[1,1,1,1]],            // I
+  [[1,1],[1,1]],          // O
+  [[0,1,0],[1,1,1]],      // T
+  [[1,0],[1,0],[1,1]],    // L
+  [[0,1],[0,1],[1,1]],    // J
+  [[0,1,1],[1,1,0]],      // S
+  [[1,1,0],[0,1,1]],      // Z
+];
+
+let piece, score, gameOver;
+
+function spawn() {
+  const s = SHAPES[(Math.random() * SHAPES.length) | 0].map(r => r.slice());
+  const color = 1 + ((Math.random() * (COLORS.length - 1)) | 0);
+  piece = {
+    cells: s,
+    color,
+    // position measured in BLOCK units, x centered
+    bx: Math.floor((COLS / BLOCK - s[0].length) / 2),
+    by: -s.length,
+  };
+  if (collides(piece.cells, piece.bx, piece.by)) gameOver = true;
+}
+
+// Does the block-grid piece overlap settled sand or walls?
+function collides(cells, bx, by) {
+  for (let r = 0; r < cells.length; r++) {
+    for (let c = 0; c < cells[r].length; c++) {
+      if (!cells[r][c]) continue;
+      const gx = (bx + c) * BLOCK;
+      const gy = (by + r) * BLOCK;
+      for (let yy = 0; yy < BLOCK; yy++) {
+        for (let xx = 0; xx < BLOCK; xx++) {
+          const x = gx + xx, y = gy + yy;
+          if (x < 0 || x >= COLS) return true;
+          if (y >= ROWS) return true;
+          if (y >= 0 && grid[idx(x, y)]) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function rotate(cells) {
+  const h = cells.length, w = cells[0].length;
+  const out = Array.from({ length: w }, () => new Array(h).fill(0));
+  for (let r = 0; r < h; r++)
+    for (let c = 0; c < w; c++)
+      out[c][h - 1 - r] = cells[r][c];
+  return out;
+}
+
+// Stamp the piece into the sand grid as individual grains.
+function settle() {
+  const { cells, color, bx, by } = piece;
+  for (let r = 0; r < cells.length; r++) {
+    for (let c = 0; c < cells[r].length; c++) {
+      if (!cells[r][c]) continue;
+      const gx = (bx + c) * BLOCK, gy = (by + r) * BLOCK;
+      for (let yy = 0; yy < BLOCK; yy++) {
+        for (let xx = 0; xx < BLOCK; xx++) {
+          const x = gx + xx, y = gy + yy;
+          if (y >= 0 && y < ROWS && x >= 0 && x < COLS) {
+            grid[idx(x, y)] = color;
+            shade[idx(x, y)] = 0.82 + Math.random() * 0.18;
+          }
+        }
+      }
+    }
+  }
+  piece = null;
+}
+
+// ---------- Sand gravity (bottom-up cellular automaton) ----------
+function stepSand() {
+  let moved = false;
+  for (let y = ROWS - 2; y >= 0; y--) {
+    // alternate scan direction per row to avoid drift bias
+    const ltr = (y & 1) === 0;
+    for (let i = 0; i < COLS; i++) {
+      const x = ltr ? i : COLS - 1 - i;
+      const here = idx(x, y);
+      const col = grid[here];
+      if (!col) continue;
+      const below = idx(x, y + 1);
+      if (!grid[below]) {                // straight down
+        grid[below] = col; grid[here] = 0;
+        shade[below] = shade[here]; moved = true;
+        continue;
+      }
+      // try to slide diagonally; pick a random first direction
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      for (const d of [dir, -dir]) {
+        const nx = x + d;
+        if (nx < 0 || nx >= COLS) continue;
+        if (!grid[idx(nx, y + 1)] && !grid[idx(nx, y)]) {
+          grid[idx(nx, y + 1)] = col; grid[here] = 0;
+          shade[idx(nx, y + 1)] = shade[here]; moved = true;
+          break;
+        }
+      }
+    }
+  }
+  return moved;
+}
+
+// ---------- Line clearing: same color bridging left wall -> right wall ----------
+function clearMatches() {
+  const visited = new Uint8Array(COLS * ROWS);
+  const toClear = [];
+
+  // Start a flood-fill from every grain on the LEFT wall.
+  for (let y = 0; y < ROWS; y++) {
+    const start = idx(0, y);
+    const col = grid[start];
+    if (!col || visited[start]) continue;
+
+    const stack = [start];
+    const region = [];
+    let touchesRight = false;
+    visited[start] = 1;
+
+    while (stack.length) {
+      const p = stack.pop();
+      region.push(p);
+      const px = p % COLS, py = (p / COLS) | 0;
+      if (px === COLS - 1) touchesRight = true;
+      // 4-connected neighbours of the same color
+      const nb = [
+        px > 0 ? p - 1 : -1,
+        px < COLS - 1 ? p + 1 : -1,
+        py > 0 ? p - COLS : -1,
+        py < ROWS - 1 ? p + COLS : -1,
+      ];
+      for (const n of nb) {
+        if (n < 0 || visited[n]) continue;
+        if (grid[n] === col) { visited[n] = 1; stack.push(n); }
+      }
+    }
+    if (touchesRight) toClear.push(region);
+  }
+
+  if (!toClear.length) return 0;
+  let cleared = 0;
+  for (const region of toClear) {
+    for (const p of region) { grid[p] = 0; shade[p] = 0; cleared++; }
+  }
+  // score scales super-linearly with the size of the cleared bridge
+  score += Math.round(cleared * (1 + cleared / 600));
+  return cleared;
+}
+
+// ---------- Rendering ----------
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // settled sand
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const col = grid[idx(x, y)];
+      if (!col) continue;
+      ctx.fillStyle = tint(COLORS[col], shade[idx(x, y)]);
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+  // active falling piece
+  if (piece) {
+    ctx.fillStyle = COLORS[piece.color];
+    const { cells, bx, by } = piece;
+    for (let r = 0; r < cells.length; r++)
+      for (let c = 0; c < cells[r].length; c++)
+        if (cells[r][c])
+          ctx.fillRect((bx + c) * BLOCK * CELL, (by + r) * BLOCK * CELL,
+                       BLOCK * CELL, BLOCK * CELL);
+  }
+  document.getElementById('score').textContent = score;
+  document.getElementById('over').textContent = gameOver ? 'GAME OVER — press R' : '';
+}
+
+// multiply a hex color by a brightness factor
+function tint(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.min(255, ((n >> 16) & 255) * f) | 0;
+  const g = Math.min(255, ((n >> 8) & 255) * f) | 0;
+  const b = Math.min(255, (n & 255) * f) | 0;
+  return `rgb(${r},${g},${b})`;
+}
+
+// ---------- Game loop ----------
+let dropTimer = 0;
+const DROP_INTERVAL = 14;   // frames between gravity steps for the active piece
+
+function tick() {
+  if (!gameOver) {
+    // sand keeps settling every frame
+    stepSand();
+
+    if (piece) {
+      dropTimer++;
+      if (dropTimer >= DROP_INTERVAL) {
+        dropTimer = 0;
+        if (!collides(piece.cells, piece.bx, piece.by + 1)) {
+          piece.by++;
+        } else {
+          settle();           // crumble into sand
+        }
+      }
+    } else {
+      // wait until sand mostly settles, then clear and spawn
+      if (!stepSand()) {
+        clearMatches();
+        if (!stepSand()) spawn();
+      }
+    }
+  }
+  draw();
+  requestAnimationFrame(tick);
+}
+
+// ---------- Input ----------
+document.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'r') { reset(); return; }
+  if (gameOver || !piece) return;
+  if (e.key === 'ArrowLeft'  && !collides(piece.cells, piece.bx - 1, piece.by)) piece.bx--;
+  if (e.key === 'ArrowRight' && !collides(piece.cells, piece.bx + 1, piece.by)) piece.bx++;
+  if (e.key === 'ArrowDown') { if (!collides(piece.cells, piece.bx, piece.by + 1)) piece.by++; }
+  if (e.key === 'ArrowUp') {
+    const r = rotate(piece.cells);
+    if (!collides(r, piece.bx, piece.by)) piece.cells = r;
+    else if (!collides(r, piece.bx - 1, piece.by)) { piece.cells = r; piece.bx--; }
+    else if (!collides(r, piece.bx + 1, piece.by)) { piece.cells = r; piece.bx++; }
+  }
+  if (e.key === ' ') {
+    while (!collides(piece.cells, piece.bx, piece.by + 1)) piece.by++;
+    settle();
+  }
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+});
+
+function reset() {
+  grid.fill(0); shade.fill(0);
+  score = 0; gameOver = false; piece = null; dropTimer = 0;
+  spawn();
+}
+
+reset();
+tick();
+</script>
+</body>
+</html>
