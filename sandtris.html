@@ -32,6 +32,7 @@
               style="background:#11141d;border:1px solid #313244;margin-bottom:6px"></canvas>
       <div>SCORE</div>
       <div id="score">0</div>
+      <div style="margin-top:4px">LEVEL <span id="level">1</span></div>
       <div id="over"></div>
       <hr style="border-color:#313244">
       <div><span class="k">← →</span> / <span class="k">A D</span> move</div>
@@ -282,6 +283,7 @@ function draw(now) {
           ctx.fillRect((rx + c) * bs, (ry + r) * bs, bs, bs);
   }
   document.getElementById('score').textContent = score;
+  document.getElementById('level').textContent = level(now);
   document.getElementById('over').textContent = gameOver ? 'GAME OVER — press R' : '';
 }
 
@@ -312,7 +314,22 @@ function tint(hex, f) {
 
 // ---------- Game loop ----------
 let dropTimer = 0;
-const DROP_INTERVAL = 14;   // frames between gravity steps for the active piece
+// Fall speed ramps with playtime: the gap between gravity steps shrinks from
+// DROP_START frames down to DROP_MIN, losing one frame every RAMP_MS. The floor
+// keeps it brisk-but-fair (~7/10) so an intermediate player stays in control.
+const DROP_START = 14;       // starting frames between gravity steps
+const DROP_MIN   = 7;        // fastest it ever gets (the difficulty cap)
+const RAMP_MS    = 25000;    // every 25s, the interval drops by one frame
+let gameStart = performance.now();
+
+function dropInterval(now) {
+  return Math.max(DROP_MIN, DROP_START - (now - gameStart) / RAMP_MS);
+}
+// Level 1..8 for on-screen feedback as the speed climbs.
+function level(now) {
+  return Math.min(DROP_START - DROP_MIN + 1,
+                  1 + Math.floor((now - gameStart) / RAMP_MS));
+}
 
 // Flash-before-clear animation state.
 const FLASH_DURATION = 1000; // total ms
@@ -349,7 +366,7 @@ function tick() {
       if (Math.abs(piece.ry - piece.by) < 0.01) piece.ry = piece.by;
 
       dropTimer++;
-      if (dropTimer >= DROP_INTERVAL) {
+      if (dropTimer >= dropInterval(now)) {
         dropTimer = 0;
         if (!collides(piece.cells, piece.bx, piece.by + 1)) {
           piece.by++;
@@ -407,6 +424,7 @@ document.addEventListener('keydown', (e) => {
 function reset() {
   grid.fill(0); shade.fill(0);
   score = 0; gameOver = false; piece = null; next = null; dropTimer = 0; flash = null;
+  gameStart = performance.now();
   spawn();
 }
 
