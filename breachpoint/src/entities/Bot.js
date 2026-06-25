@@ -33,6 +33,9 @@ export class Bot {
     this.alive = true;
     this.maxHealth = 100;
     this.health = 100;
+    this.kills = 0;
+    this.deaths = 0;
+    this.lastAttacker = null; // who last damaged me (for kill feed attribution)
     this.position = new THREE.Vector3();
     this.velocity = new THREE.Vector3();
     this.yaw = 0;
@@ -98,9 +101,10 @@ export class Bot {
 
   applyBlind(seconds) { this.blindT = Math.max(this.blindT, seconds); }
 
-  applyDamage(amount, isHead) {
+  applyDamage(amount, isHead, attacker = null) {
     if (!this.alive) return false;
     this.health -= amount;
+    if (attacker) this.lastAttacker = attacker;
     this.bodyMat.emissive.setHex(isHead ? 0xffffff : 0x550000);
     this._flash = 0.08;
     // Being shot draws attention to the shooter direction (handled by brain via
@@ -206,10 +210,11 @@ export class Bot {
       const headRoll = Math.random() < 0.15 + this.difficulty * 0.2;
       const dmg = this.damage * (headRoll ? 3.0 : 1);
       if (entity.takeDamage) {
+        entity.lastAttacker = this;
         entity.takeDamage(dmg, this.position.clone());
         if (entity === this.world._player && this.hooks.damagePlayer) this.hooks.damagePlayer(dmg, this.position.clone());
       } else if (entity.applyDamage) {
-        entity.applyDamage(dmg, headRoll);
+        entity.applyDamage(dmg, headRoll, this);
       }
     }
     // Gunfire is a sound event other bots can hear.

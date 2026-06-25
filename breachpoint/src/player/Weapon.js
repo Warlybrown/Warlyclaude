@@ -270,9 +270,10 @@ export class Weapon {
       if (target && target.alive) {
         const isHead = h.point.y >= target.headY;
         const dmg = this._damageAt(h.distance, isHead) * mult;
-        const dead = target.applyDamage(dmg, isHead);
+        if (this.owner) target.lastAttacker = this.owner;
+        const dead = target.applyDamage(dmg, isHead, this.owner);
         this.events.push({ type: 'hit', headshot: isHead, killed: dead, dmg, target });
-        if (dead) this.events.push({ type: 'kill', target });
+        if (dead) this.events.push({ type: 'kill', target, headshot: isHead });
         endPoint = h.point.clone();
         break; // bullet stops in the body
       }

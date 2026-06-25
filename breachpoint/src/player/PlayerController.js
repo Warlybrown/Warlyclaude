@@ -63,6 +63,9 @@ export class PlayerController {
     this.maxHealth = 100;
     this.health = this.maxHealth;
     this.lastHitFrom = null; // world pos of last damage source (for dir indicator)
+    this.lastAttacker = null; // entity that last damaged us (kill feed)
+    this.kills = 0;
+    this.deaths = 0;
     this.onDeath = null;
   }
 

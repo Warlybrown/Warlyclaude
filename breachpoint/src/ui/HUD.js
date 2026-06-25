@@ -93,6 +93,19 @@ export class HUD {
         #channel .txt { font-size:12px; letter-spacing:.25em; color:var(--ink); text-transform:uppercase; }
         #flashblind { position:absolute; inset:0; background:#ffffff; opacity:0;
                       pointer-events:none; }
+        /* spotted-enemy world markers */
+        #markers { position:absolute; inset:0; pointer-events:none; }
+        #markers .mk { position:absolute; transform:translate(-50%,-50%);
+          color:#ff5a5a; font-size:13px; font-weight:700; letter-spacing:.05em;
+          text-shadow:0 0 4px #000; white-space:nowrap; }
+        #markers .mk .tri { display:block; text-align:center; font-size:10px; line-height:1; }
+        #markers .mk .dist { font-size:9px; color:#ffb0b0; opacity:.85; }
+        /* damage-direction indicator (rotates around centre) */
+        #dmgdir { position:absolute; left:50%; top:50%; width:0; height:0; opacity:0;
+          transition:opacity .15s ease; }
+        #dmgdir .arrow { position:absolute; left:-12px; top:-150px; width:24px; text-align:center;
+          color:#ff3a3a; font-size:26px; text-shadow:0 0 6px #000;
+          transform-origin:12px 162px; }
         /* gadget block, above stance bottom-left */
         #gadget { position:absolute; left:26px; bottom:54px; font-size:12px;
                   letter-spacing:.18em; color:var(--ink-dim); text-transform:uppercase; }
@@ -101,6 +114,8 @@ export class HUD {
       </style>
       <div id="dmgflash"></div>
       <div id="flashblind"></div>
+      <div id="markers"></div>
+      <div id="dmgdir"><div class="arrow" id="dmgdir-a">▲</div></div>
       <div id="xhair">
         <div class="dot"></div>
         <div class="l v top"></div><div class="l v bot"></div>
@@ -165,6 +180,11 @@ export class HUD {
     this.channelBar = el.querySelector('#channel-bar');
     this.dmgflash = el.querySelector('#dmgflash');
     this.flashblind = el.querySelector('#flashblind');
+    this.markersEl = el.querySelector('#markers');
+    this.dmgdirEl = el.querySelector('#dmgdir');
+    this.dmgdirArrow = el.querySelector('#dmgdir-a');
+    this._markerPool = [];
+    this._dmgDirTimer = 0;
     this.gnameEl = el.querySelector('#gname');
     this.gchargeEl = el.querySelector('#gcharge');
     this._dmgTimer = 0;
@@ -338,10 +358,49 @@ export class HUD {
     } else {
       this.flashblind.style.opacity = 0;
     }
+
+    // Damage-direction indicator decay.
+    if (this._dmgDirTimer > 0) {
+      this._dmgDirTimer -= dt;
+      this.dmgdirEl.style.opacity = Math.min(1, this._dmgDirTimer);
+    } else {
+      this.dmgdirEl.style.opacity = 0;
+    }
   }
 
   /** True while the player is significantly flash-blinded (accuracy penalty). */
   get isBlinded() { return this._blindTimer > 0.3; }
+
+  /**
+   * Draw spotted-enemy markers at screen positions.
+   * @param {Array} list [{ x, y, dist, onScreen }] x/y in CSS pixels
+   */
+  setSpotMarkers(list) {
+    // Grow the pool as needed.
+    while (this._markerPool.length < list.length) {
+      const m = document.createElement('div');
+      m.className = 'mk';
+      m.innerHTML = '<span class="tri">▼</span><span class="dist"></span>';
+      this.markersEl.appendChild(m);
+      this._markerPool.push(m);
+    }
+    for (let i = 0; i < this._markerPool.length; i++) {
+      const m = this._markerPool[i];
+      const d = list[i];
+      if (!d || !d.onScreen) { m.style.display = 'none'; continue; }
+      m.style.display = 'block';
+      m.style.left = `${d.x}px`;
+      m.style.top = `${d.y}px`;
+      m.querySelector('.dist').textContent = `${Math.round(d.dist)}m`;
+    }
+  }
+
+  /** Point the damage-direction arrow toward a relative angle (radians), or hide. */
+  setDamageDir(angleRad) {
+    if (angleRad == null) return;
+    this._dmgDirTimer = 1.2;
+    this.dmgdirArrow.style.transform = `rotate(${angleRad}rad)`;
+  }
 
   /** Hide all the in-round combat HUD (used in prep/drone/menus). */
   setCombatVisible(on) {

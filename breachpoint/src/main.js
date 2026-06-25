@@ -17,6 +17,10 @@ import { Weapon, WEAPON_DEFS } from './player/Weapon.js';
 import { Bomb, BombState } from './entities/Bomb.js';
 import { Drone } from './entities/Drone.js';
 import { HUD } from './ui/HUD.js';
+import { OperatorSelect } from './ui/OperatorSelect.js';
+import { KillFeed } from './ui/KillFeed.js';
+import { Scoreboard } from './ui/Scoreboard.js';
+import { DronePhaseUI } from './ui/DronePhaseUI.js';
 import { MapLoader } from './world/MapLoader.js';
 import housesite, { FLOOR_H } from './world/mapDefs/housesite.js';
 import { OPERATORS, operatorsBySide, Side } from './operators/operators.js';
@@ -72,6 +76,10 @@ function boot() {
   const fpCam = new FirstPersonCamera(camera, { fov: 80, adsFov: 55 });
   const weapon = new Weapon(WEAPON_DEFS.AR, scene, camera, world);
   const hud = new HUD(ui);
+  const opSelect = new OperatorSelect(ui);
+  const killFeed = new KillFeed(ui);
+  const scoreboard = new Scoreboard(ui);
+  const droneUI = new DronePhaseUI(ui);
   const bomb = new Bomb(scene);
   const drone = new Drone(scene, world, droneCamera);
   const gs = new GameState({ roundsToWin: 4, maxRounds: 7, humanStartSide: Team.ATTACK });
@@ -89,10 +97,19 @@ function boot() {
     plantHold: 0,         // human plant/defuse channel accumulator
     aiPlantStarted: false,
     operator: null,       // human operator this round
+    pickedOperator: null, // player's selected operator (from OperatorSelect)
     loadout: null,        // Loadout (weapon tuning + utility)
     gadget: null,         // signature gadget instance
     spotted: new Map(),   // entity -> expiry timestamp (ms) for HUD reveal
   };
+
+  // Operator-select interactions: pick a card → re-equip live; ENTER readies up.
+  opSelect.onPick = (op) => {
+    round.pickedOperator = op;
+    opSelect.setSelected(op);
+    setupRound(); // re-apply operator/loadout/gadget immediately so the pick sticks
+  };
+  opSelect.onReady = () => gs.skipPhase();
 
   // Shared context handed to gadgets (uniform API). onEvent routes gameplay
   // events (spotting, flash, breach) back into the orchestrator/HUD.
@@ -125,6 +142,13 @@ function boot() {
 
   // --- input edges ----------------------------------------------------------
   let prevFire = false;
+  let scoreboardVisible = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Tab') { e.preventDefault(); scoreboardVisible = true; scoreboard.show(); }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Tab') { scoreboardVisible = false; scoreboard.hide(); }
+  });
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyR') weapon.reload();
     // Ready-up: skip remaining prep/select time.
@@ -254,22 +278,29 @@ function boot() {
     spawnTeams();
 
     // --- operator + loadout + signature gadget ---
-    // Default pick: first operator of the human's side (full select UI = Phase 6).
+    // Use the player's pick for this side (set by OperatorSelect); else default.
     const sideKey = humanSide === Team.ATTACK ? Side.ATTACK : Side.DEFEND;
     const roster = operatorsBySide(sideKey);
-    round.operator = round.pickedFor === sideKey && round.operator?.side === sideKey
-      ? round.operator
-      : roster[0];
+    const picked = round.pickedOperator && round.pickedOperator.side === sideKey
+      ? round.pickedOperator : roster[0];
+    round.operator = picked;
     round.loadout = new Loadout(round.operator);
     round.loadout.resetUtility();
 
     // Tune the primary weapon from the operator + attachments and apply it.
     const baseDef = WEAPON_DEFS[round.operator.primary] || WEAPON_DEFS.AR;
     weapon.def = round.loadout.tuneWeapon(baseDef);
+    weapon.owner = { name: round.operator.callsign, side: humanSide, isPlayer: true };
     weapon.ammo = weapon.def.magSize;
     weapon.reserve = weapon.def.reserve;
     weapon.reloading = false;
     fpCam.adsFov = 55 * (weapon.def._adsFovMul || 1);
+
+    // Reset per-round K/D for everyone, and clear the kill feed.
+    player.kills = 0; player.deaths = 0; player.lastAttacker = null;
+    _prevHealth = player.maxHealth;
+    killFeed.clear();
+    resetDeathTracking();
 
     // Build the signature gadget.
     if (round.gadget) round.gadget.cleanup();
@@ -288,23 +319,28 @@ function boot() {
       setupRound();
       round.activeCamera = camera;
       drone.destroy();
+      droneUI.hide();
       hud.setCombatVisible(false);
-      hud.showBanner(`ROUND ${gs.round}`, `${gs.humanSide} · SELECT OPERATOR · [ENTER] ready`,
-        gs.humanSide === Team.ATTACK ? 'atk' : 'def', 0);
+      // Show the operator-select grid for the human's side.
+      const sideKey = gs.humanSide === Team.ATTACK ? Side.ATTACK : Side.DEFEND;
+      opSelect.show(operatorsBySide(sideKey), gs.humanSide, gs.round,
+        gs.score.human, gs.score.ai, round.operator);
     }
     if (phase === Phase.PREP) {
       hud.hideBanner();
+      opSelect.hide();
       if (gs.humanSide === Team.ATTACK) {
         // Attacker drives the recon drone.
         drone.deploy(new THREE.Vector3(0, 0.22, 22), Math.PI);
         drone.setActive(true);
         round.activeCamera = droneCamera;
         hud.setCombatVisible(false);
+        droneUI.showAttacker();
       } else {
         // Defender sets up: reinforce walls (V), place on foot.
         round.activeCamera = camera;
         hud.setCombatVisible(true);
-        // AI attackers (if any) idle outside during prep.
+        droneUI.showDefender();
       }
       // AI defense auto-reinforces a couple of walls near the chosen site.
       if (gs.aiSide === Team.DEFEND) {
@@ -314,6 +350,8 @@ function boot() {
     }
     if (phase === Phase.ACTION) {
       drone.setActive(false);
+      droneUI.hide();
+      opSelect.hide();
       round.activeCamera = camera;
       hud.setCombatVisible(true);
       hud.showBanner('ACTION', gs.humanSide === Team.ATTACK ? 'BREACH & PLANT' : 'HOLD THE SITE',
@@ -435,8 +473,77 @@ function boot() {
     }
   }
 
+  // --- kill feed: detect deaths each tick + attribute to last attacker -------
+  const _prevAlive = new Map();
+  function nameOf(c) {
+    if (c === player) return round.operator?.callsign || 'YOU';
+    if (c && c.isPlayer) return c.name; // weapon.owner
+    return c?.operator?.callsign || '—';
+  }
+  function sideOf(c) {
+    if (c === player) return gs.humanSide;
+    if (c && c.isPlayer) return c.side;
+    return c?.side || '—';
+  }
+  function pollDeaths() {
+    const combatants = [player, ...world.bots];
+    for (const c of combatants) {
+      const was = _prevAlive.get(c);
+      if (was === undefined) { _prevAlive.set(c, c.alive); continue; }
+      if (was && !c.alive) {
+        // c just died — attribute to its last attacker.
+        const killer = c.lastAttacker;
+        c.deaths = (c.deaths || 0) + 1;
+        if (killer) killer.kills = (killer.kills || 0) + 1;
+        killFeed.add({
+          killer: nameOf(killer), killerSide: sideOf(killer),
+          victim: nameOf(c), victimSide: sideOf(c),
+          weapon: killer === player || killer?.isPlayer ? weapon.def.name : 'GUNFIRE',
+          headshot: false,
+          killerIsYou: killer === player || killer?.isPlayer,
+          victimIsYou: c === player,
+        });
+        // Player took the kill → flash damage dir already handled on hit.
+      }
+      _prevAlive.set(c, c.alive);
+    }
+  }
+  function resetDeathTracking() { _prevAlive.clear(); }
+
+  // --- scoreboard roster ----------------------------------------------------
+  function buildScoreboard() {
+    const humanTeam = [
+      { name: round.operator?.callsign || 'YOU', k: player.kills, d: player.deaths, alive: player.alive, you: true },
+      ...round.allies.map((a) => ({ name: a.operator?.callsign || 'ALLY', k: a.kills, d: a.deaths, alive: a.alive, you: false })),
+    ];
+    const aiTeam = round.enemies.map((e) => ({ name: e.operator?.callsign || 'ENEMY', k: e.kills, d: e.deaths, alive: e.alive, you: false }));
+    return { humanSide: gs.humanSide, aiSide: gs.aiSide, scoreH: gs.score.human, scoreA: gs.score.ai, humanTeam, aiTeam };
+  }
+
+  // --- spotted-enemy screen markers -----------------------------------------
+  const _proj = new THREE.Vector3();
+  function projectSpotMarkers() {
+    const now = performance.now();
+    const list = [];
+    for (const e of round.enemies) {
+      const exp = round.spotted.get(e);
+      if (!exp || exp <= now || !e.alive) continue;
+      const head = e.position.clone().add(new THREE.Vector3(0, 1.7, 0));
+      _proj.copy(head).project(camera);
+      const onScreen = _proj.z < 1 && _proj.x > -1 && _proj.x < 1 && _proj.y > -1 && _proj.y < 1;
+      list.push({
+        x: (_proj.x * 0.5 + 0.5) * window.innerWidth,
+        y: (-_proj.y * 0.5 + 0.5) * window.innerHeight,
+        dist: player.position.distanceTo(e.position),
+        onScreen,
+      });
+    }
+    hud.setSpotMarkers(list);
+  }
+
   // --- main loop ------------------------------------------------------------
   let fps = 0, frames = 0, fpsAccum = 0, lastFpsTime = performance.now();
+  let _prevHealth = 100;
 
   function update(dt) {
     gs.update(dt);
@@ -446,6 +553,14 @@ function boot() {
     if (gs.phase === Phase.ACTION) {
       for (const b of world.bots) b.update(dt);
       if (world.soundEvents.length > 64) world.soundEvents.splice(0, world.soundEvents.length - 64);
+      pollDeaths();
+      // Damage-direction indicator when the player's health drops.
+      if (player.health < _prevHealth && player.lastHitFrom) {
+        const to = player.lastHitFrom.clone().sub(player.position);
+        const ang = Math.atan2(to.x, -to.z) - player.yaw; // relative to facing
+        hud.setDamageDir(ang);
+      }
+      _prevHealth = player.health;
     }
 
     // Signature gadget effects progress every frame (fuses, areas, spotting).
@@ -494,6 +609,24 @@ function boot() {
 
     // HUD.
     updateHud(dt);
+    killFeed.update(dt);
+
+    // Spotted-enemy markers (action phase, player view).
+    if (gs.phase === Phase.ACTION && !round.spectating) projectSpotMarkers();
+    else hud.setSpotMarkers([]);
+
+    // Prep-phase drone/defender overlay numbers.
+    if (gs.phase === Phase.PREP) {
+      if (gs.humanSide === Team.ATTACK) {
+        droneUI.update({ battery: Math.max(0, gs.timeRemaining / 45 * 100), hp: (drone.health / 20) * 100,
+          spotted: drone.spotted.length, objective: round.chosenSite?.name || 'SCANNING…' });
+      } else {
+        droneUI.update({ reinforce: world.reinforce.remaining });
+      }
+    }
+
+    // Live scoreboard while held.
+    if (scoreboardVisible) scoreboard.render(buildScoreboard());
   }
 
   // Reinforce key (defender prep).
@@ -511,7 +644,7 @@ function boot() {
     let timer = gs.timeRemaining;
     let plantMode = false;
 
-    if (gs.phase === Phase.OPERATOR_SELECT) { phaseLabel = 'OPERATOR SELECT'; objective = 'CHOOSE LOADOUT · [ENTER] READY'; }
+    if (gs.phase === Phase.OPERATOR_SELECT) { phaseLabel = 'OPERATOR SELECT'; objective = 'CHOOSE LOADOUT · [ENTER] READY'; opSelect.setTimer(gs.timeRemaining); }
     else if (gs.phase === Phase.PREP) {
       phaseLabel = 'PREP';
       objective = gs.humanSide === Team.ATTACK
