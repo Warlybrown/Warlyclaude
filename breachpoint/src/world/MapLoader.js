@@ -30,9 +30,12 @@ export class MapLoader {
     const world = {
       solids: [],
       colliders: [],
+      staticColliders: [], // non-destructible only — used for nav clearance
       destructibles: [],
       sites: [],
       spawns: { attackers: [], defenders: [] },
+      bots: [],
+      soundEvents: [], // {pos, type, time} consumed by bot hearing
       def,
     };
 
@@ -58,9 +61,12 @@ export class MapLoader {
     const groundMat = new THREE.MeshStandardMaterial({ color: 0x16261a, roughness: 1 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(def.exterior.w, def.exterior.d), groundMat);
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.01;
+    ground.position.y = -0.02;
     ground.receiveShadow = true;
     scene.add(ground);
+    // The exterior ground is a nav surface (so the navmesh's downward raycast
+    // finds floor outside the building and bots can path from exterior spawns).
+    world.solids.push(ground);
     const grid = new THREE.GridHelper(def.exterior.w, def.exterior.w, 0x1d5c3a, 0x10301f);
     grid.material.transparent = true; grid.material.opacity = 0.18;
     scene.add(grid);
@@ -135,7 +141,9 @@ export class MapLoader {
     this.scene.add(mesh);
     if (solid) {
       world.solids.push(mesh);
-      world.colliders.push(new THREE.Box3().setFromObject(mesh));
+      const box = new THREE.Box3().setFromObject(mesh);
+      world.colliders.push(box);
+      world.staticColliders.push(box); // structural — never removed
     }
     return mesh;
   }

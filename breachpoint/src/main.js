@@ -14,7 +14,6 @@ import { GameState, Phase, Team } from './core/GameState.js';
 import { PlayerController } from './player/PlayerController.js';
 import { FirstPersonCamera } from './player/FirstPersonCamera.js';
 import { Weapon, WEAPON_DEFS } from './player/Weapon.js';
-import { Target } from './entities/Target.js';
 import { Bomb, BombState } from './entities/Bomb.js';
 import { Drone } from './entities/Drone.js';
 import { HUD } from './ui/HUD.js';
@@ -23,8 +22,11 @@ import housesite, { FLOOR_H } from './world/mapDefs/housesite.js';
 import { OPERATORS, operatorsBySide, Side } from './operators/operators.js';
 import { Loadout } from './player/Loadout.js';
 import { makeGadget } from './operators/gadgets/index.js';
+import { Navmesh } from './world/Navmesh.js';
+import { Bot } from './entities/Bot.js';
+import { BotBrain } from './entities/BotBrain.js';
 
-const VERSION = '0.5.0 · phase 4';
+const VERSION = '0.6.0 · phase 5';
 
 function boot() {
   const app = document.getElementById('app');
@@ -49,7 +51,20 @@ function boot() {
   // --- world ----------------------------------------------------------------
   const mapLoader = new MapLoader(scene);
   const world = mapLoader.load(housesite);
-  world.targets = []; // damageable enemies (stub bots for now)
+  world.targets = []; // damageable enemies (the enemy bot team)
+
+  // Ensure every object's world matrix is current before the navmesh raycasts
+  // against them (newly-added meshes like the ground plane otherwise have a
+  // stale matrixWorld until the first render, and downward floor-rays miss them).
+  scene.updateMatrixWorld(true);
+
+  // Build the navigation graph from the loaded map (one-time).
+  // Bounds cover the building AND the southern exterior approach so attacker
+  // bots can path from their outdoor spawns through the doorways.
+  const nav = new Navmesh(world, { spacing: 2.0, bounds: { minX: -15, maxX: 15, minZ: -15, maxZ: 25 } });
+
+  // Difficulty (0..1) — surfaced in the Phase 7 settings menu.
+  const settings = { difficulty: 0.5 };
 
   // --- core objects ---------------------------------------------------------
   const input = new Input(canvas);
@@ -66,7 +81,8 @@ function boot() {
 
   // --- per-round mutable state ----------------------------------------------
   const round = {
-    enemies: [],          // Target[] (opposing team)
+    enemies: [],          // Bot[] (opposing team, shootable by player)
+    allies: [],           // Bot[] (friendly team)
     chosenSite: null,     // site the attackers will hit (AI) / planted at
     activeCamera: camera, // camera currently rendered
     spectating: false,
@@ -141,24 +157,76 @@ function boot() {
   });
 
   // --- helpers --------------------------------------------------------------
-  function clearEnemies() {
-    for (const e of round.enemies) scene.remove(e.mesh);
-    round.enemies = [];
+  function clearBots() {
+    for (const b of world.bots) scene.remove(b.mesh);
+    world.bots = [];
+    round.enemies = [];   // enemy bot team (shootable by player)
+    round.allies = [];    // friendly bot team
     world.targets = [];
   }
 
-  function spawnEnemies(side) {
-    clearEnemies();
-    // side = the AI's side this round.
-    const spawns = side === Team.DEFEND ? world.spawns.defenders : world.spawns.attackers;
-    for (const sp of spawns) {
-      const t = new Target(scene, sp);
-      round.enemies.push(t);
-      world.targets.push(t);
+  // Damage hook so bot hits on the player flash the HUD + can kill → spectate.
+  const botHooks = {
+    damagePlayer: (dmg, fromPos) => {
+      player.lastHitFrom = fromPos;
+      hud.flashDamage();
+    },
+  };
+
+  /** Spawn both bot teams + attach brains. Player is the 5th on the human team. */
+  function spawnTeams() {
+    clearBots();
+    world._player = player;
+    const humanSide = gs.humanSide;
+    const aiSide = gs.aiSide;
+
+    const mkBot = (side, team, op, spawn) => {
+      const bot = new Bot(scene, world, { side, team, operator: op, difficulty: settings.difficulty, hooks: botHooks });
+      bot.spawnAt(spawn.clone ? spawn.clone() : new THREE.Vector3(spawn.x, spawn.y, spawn.z),
+        side === Team.ATTACK ? Math.PI : 0);
+      world.bots.push(bot);
+      return bot;
+    };
+
+    // Enemy team (AI side): 5 bots.
+    const aiOps = operatorsBySide(aiSide === Team.ATTACK ? Side.ATTACK : Side.DEFEND);
+    const aiSpawns = aiSide === Team.ATTACK ? world.spawns.attackers : world.spawns.defenders;
+    for (let i = 0; i < 5; i++) {
+      const b = mkBot(aiSide, 'ai', aiOps[i % aiOps.length], aiSpawns[i % aiSpawns.length]);
+      round.enemies.push(b);
+      world.targets.push(b); // player can shoot the enemy team
+    }
+
+    // Ally team (human side): 4 bots (player is the 5th).
+    const allyOps = operatorsBySide(humanSide === Team.ATTACK ? Side.ATTACK : Side.DEFEND);
+    const allySpawns = humanSide === Team.ATTACK ? world.spawns.attackers : world.spawns.defenders;
+    for (let i = 0; i < 4; i++) {
+      const b = mkBot(humanSide, 'human', allyOps[(i + 1) % allyOps.length], allySpawns[(i + (i >= 2 ? 1 : 0)) % allySpawns.length]);
+      round.allies.push(b);
+    }
+
+    // Attach brains with side-appropriate context.
+    const attackingSide = Team.ATTACK; // whichever team is ATTACK targets the site
+    // Both sides reference the objective site: attackers advance to it, defenders
+    // anchor on it. (Defenders "committing" to the bomb site keeps rounds decisive.)
+    for (const b of round.enemies) {
+      b.brain = new BotBrain(b, {
+        nav, world, bomb,
+        getEnemies: () => [player, ...round.allies],
+        getSite: () => round.chosenSite,
+      });
+    }
+    for (const b of round.allies) {
+      b.brain = new BotBrain(b, {
+        nav, world, bomb,
+        getEnemies: () => round.enemies,
+        getSite: () => round.chosenSite,
+      });
     }
   }
 
   function aliveEnemies() { return round.enemies.filter((e) => e.alive); }
+  function aliveAllies() { return round.allies.filter((e) => e.alive); }
 
   function setupRound() {
     // Reset reinforcement budget by reloading walls? For now keep budget; new
@@ -173,7 +241,7 @@ function boot() {
 
     // Choose the site attackers will hit (AI picks; if human attacks, they pick
     // by walking to one — we still pre-pick for AI-defense intel).
-    round.chosenSite = world.sites[Math.floor(gs.round) % world.sites.length];
+    round.chosenSite = world.sites[(gs.round - 1) % world.sites.length];
 
     // Place the human at their side's spawn.
     const humanSide = gs.humanSide;
@@ -182,8 +250,8 @@ function boot() {
     player.reset(hs, humanSide === Team.ATTACK ? Math.PI : 0);
     player.shieldSpeedMul = 1;
 
-    // Spawn the AI team.
-    spawnEnemies(gs.aiSide);
+    // Spawn both bot teams (enemies + allies).
+    spawnTeams();
 
     // --- operator + loadout + signature gadget ---
     // Default pick: first operator of the human's side (full select UI = Phase 6).
@@ -308,36 +376,20 @@ function boot() {
       hud.setChannel('', null);
     }
 
-    // --- stub AI: when the AI is ATTACKING, script a plant so defense resolves.
-    if (gs.aiSide === Team.ATTACK && !bomb.planted && bomb.state !== BombState.DETONATED) {
-      const planter = aliveEnemies()[0];
-      if (planter) {
-        // Walk the planter toward the chosen site, then channel.
-        const sp = round.chosenSite.pos;
-        const here = planter.spawn;
-        const d = Math.hypot(sp.x - here.x, sp.z - here.z);
-        if (d > 1.2) {
-          // crude approach: nudge the spawn toward the site each tick
-          here.x += Math.sign(sp.x - here.x) * Math.min(2 * dt, Math.abs(sp.x - here.x));
-          here.z += Math.sign(sp.z - here.z) * Math.min(2 * dt, Math.abs(sp.z - here.z));
-          here.y = sp.y;
-          planter._place();
-        } else {
-          bomb.tickPlant(dt, round.chosenSite);
-        }
-      }
-    }
+    // (Attacker bots plant via their BotBrain; no scripted stub needed.)
 
     // --- win conditions by elimination ---
-    if (aliveEnemies().length === 0) {
+    // Human team = player + ally bots. AI team = enemy bots.
+    const humanTeamAlive = player.alive || aliveAllies().length > 0;
+    const enemyAlive = aliveEnemies().length > 0;
+    if (!enemyAlive) {
       gs.endRound('human', `${gs.aiSide === Team.DEFEND ? 'Defenders' : 'Attackers'} eliminated`);
+    } else if (!humanTeamAlive) {
+      gs.endRound('ai', `${gs.humanSide === Team.DEFEND ? 'Defenders' : 'Attackers'} eliminated`);
     }
-    if (!player.alive && !round.spectating) {
-      // Phase 5 will spectate teammates; for now the round continues and the
-      // human spectates. With no allies yet, human death + (attack side) means
-      // the attack stalls → time will decide. Enter spectator cam.
-      enterSpectator();
-    }
+
+    // Enter spectator when the human dies but the round continues (allies live).
+    if (!player.alive && !round.spectating) enterSpectator();
   }
 
   // --- spectator ------------------------------------------------------------
@@ -348,15 +400,19 @@ function boot() {
     hud.showBanner('DOWNED', 'SPECTATING · round continues', null, 2.2);
   }
   function updateSpectator(dt) {
-    specAngle += dt * 0.2;
-    const site = round.chosenSite || world.sites[0];
-    const r = 10;
-    camera.position.set(
-      site.pos.x + Math.cos(specAngle) * r,
-      site.pos.y + 6,
-      site.pos.z + Math.sin(specAngle) * r
-    );
-    camera.lookAt(site.pos);
+    specAngle += dt * 0.6;
+    // Spectate a living ally in third-person if any; otherwise orbit the site.
+    const ally = aliveAllies()[0];
+    if (ally) {
+      const fwd = new THREE.Vector3(-Math.sin(ally.yaw), 0, -Math.cos(ally.yaw));
+      camera.position.copy(ally.position).addScaledVector(fwd, -2.4).add(new THREE.Vector3(0, 2.2, 0));
+      camera.lookAt(ally.position.clone().add(new THREE.Vector3(0, 1.2, 0)).addScaledVector(fwd, 3));
+    } else {
+      const site = round.chosenSite || world.sites[0];
+      const r = 10;
+      camera.position.set(site.pos.x + Math.cos(specAngle) * r, site.pos.y + 6, site.pos.z + Math.sin(specAngle) * r);
+      camera.lookAt(site.pos);
+    }
   }
 
   // --- spotting: reveal tagged enemies (drone, recon, cameras) --------------
@@ -385,10 +441,11 @@ function boot() {
   function update(dt) {
     gs.update(dt);
 
-    // Enemy dummies tick (respawn disabled during a live round).
-    for (const e of round.enemies) {
-      e._respawnT = 999; // keep dead enemies down (no respawn in a round)
-      e.update(dt);
+    // Bots think + act only during the action phase (no respawn in a round).
+    // Sound events are pruned each tick so hearing stays "fresh".
+    if (gs.phase === Phase.ACTION) {
+      for (const b of world.bots) b.update(dt);
+      if (world.soundEvents.length > 64) world.soundEvents.splice(0, world.soundEvents.length - 64);
     }
 
     // Signature gadget effects progress every frame (fuses, areas, spotting).
@@ -479,8 +536,8 @@ function boot() {
       round: gs.round, scoreH: gs.score.human, scoreA: gs.score.ai,
     });
 
-    // Alive pips (human side: only the human is real for now).
-    const humanAlive = [player.alive, true, true, true, true];
+    // Alive pips: player + ally bots vs enemy bots.
+    const humanAlive = [player.alive, ...round.allies.map((a) => a.alive)];
     const aiAlive = round.enemies.map((e) => e.alive);
     hud.setAlive(humanAlive, aiAlive);
 
@@ -518,7 +575,7 @@ function boot() {
   }
   requestAnimationFrame(sampleFps);
 
-  const game = { THREE, renderer, scene, camera, input, loop, player, weapon, world, hud, gs, bomb, drone, round, FLOOR_H };
+  const game = { THREE, renderer, scene, camera, input, loop, player, weapon, world, hud, gs, bomb, drone, round, nav, settings, OPERATORS, FLOOR_H };
   window.__BREACHPOINT__ = game;
   statusEl.textContent = `WARL 5 SIEGE · ${VERSION}\nready · click to start`;
   console.log('[BREACHPOINT] phase 3 boot complete', VERSION);
