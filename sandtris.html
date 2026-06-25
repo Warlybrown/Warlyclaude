@@ -90,12 +90,17 @@ let piece, score, gameOver;
 function spawn() {
   const s = SHAPES[(Math.random() * SHAPES.length) | 0].map(r => r.slice());
   const color = 1 + ((Math.random() * (COLORS.length - 1)) | 0);
+  const startX = Math.floor((COLS / BLOCK - s[0].length) / 2);
+  const startY = -s.length;
   piece = {
     cells: s,
     color,
-    // position measured in BLOCK units, x centered
-    bx: Math.floor((COLS / BLOCK - s[0].length) / 2),
-    by: -s.length,
+    // logical position measured in BLOCK units (used for collision / settling)
+    bx: startX,
+    by: startY,
+    // rendered position — eases toward the logical one for smooth motion
+    rx: startX,
+    ry: startY,
   };
   if (collides(piece.cells, piece.bx, piece.by)) gameOver = true;
 }
@@ -241,15 +246,15 @@ function draw() {
       ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     }
   }
-  // active falling piece
+  // active falling piece — drawn at the eased render position for smooth motion
   if (piece) {
     ctx.fillStyle = COLORS[piece.color];
-    const { cells, bx, by } = piece;
+    const { cells, rx, ry } = piece;
+    const bs = BLOCK * CELL;
     for (let r = 0; r < cells.length; r++)
       for (let c = 0; c < cells[r].length; c++)
         if (cells[r][c])
-          ctx.fillRect((bx + c) * BLOCK * CELL, (by + r) * BLOCK * CELL,
-                       BLOCK * CELL, BLOCK * CELL);
+          ctx.fillRect((rx + c) * bs, (ry + r) * bs, bs, bs);
   }
   document.getElementById('score').textContent = score;
   document.getElementById('over').textContent = gameOver ? 'GAME OVER — press R' : '';
@@ -274,6 +279,14 @@ function tick() {
     stepSand();
 
     if (piece) {
+      // ease the rendered position toward the logical grid position.
+      // horizontal glides quickly (lively direction changes); vertical
+      // follows a touch slower so the fall reads as continuous, not stepped.
+      piece.rx += (piece.bx - piece.rx) * 0.4;
+      piece.ry += (piece.by - piece.ry) * 0.3;
+      if (Math.abs(piece.rx - piece.bx) < 0.01) piece.rx = piece.bx;
+      if (Math.abs(piece.ry - piece.by) < 0.01) piece.ry = piece.by;
+
       dropTimer++;
       if (dropTimer >= DROP_INTERVAL) {
         dropTimer = 0;
