@@ -1,0 +1,18 @@
+{
+  "name": "breachpoint",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "WARL 5 SIEGE (codename BREACHPOINT) — a browser-based siege-style tactical FPS built with Three.js. 100% original assets, names, and branding.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
