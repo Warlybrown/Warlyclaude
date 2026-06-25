@@ -20,8 +20,11 @@ import { Drone } from './entities/Drone.js';
 import { HUD } from './ui/HUD.js';
 import { MapLoader } from './world/MapLoader.js';
 import housesite, { FLOOR_H } from './world/mapDefs/housesite.js';
+import { OPERATORS, operatorsBySide, Side } from './operators/operators.js';
+import { Loadout } from './player/Loadout.js';
+import { makeGadget } from './operators/gadgets/index.js';
 
-const VERSION = '0.4.0 · phase 3';
+const VERSION = '0.5.0 · phase 4';
 
 function boot() {
   const app = document.getElementById('app');
@@ -69,7 +72,40 @@ function boot() {
     spectating: false,
     plantHold: 0,         // human plant/defuse channel accumulator
     aiPlantStarted: false,
+    operator: null,       // human operator this round
+    loadout: null,        // Loadout (weapon tuning + utility)
+    gadget: null,         // signature gadget instance
+    spotted: new Map(),   // entity -> expiry timestamp (ms) for HUD reveal
   };
+
+  // Shared context handed to gadgets (uniform API). onEvent routes gameplay
+  // events (spotting, flash, breach) back into the orchestrator/HUD.
+  const gadgetCtx = {
+    scene, world, player, drone, audio: null,
+    onEvent: (ev) => handleGadgetEvent(ev),
+  };
+
+  function markSpotted(entity, durationSec) {
+    round.spotted.set(entity, performance.now() + durationSec * 1000);
+  }
+
+  function handleGadgetEvent(ev) {
+    if (!ev) return;
+    switch (ev.type) {
+      case 'spot': markSpotted(ev.entity, ev.duration || 3); break;
+      case 'flashed':
+        if (ev.target === 'player') hud.flashBlind(ev.strength);
+        break;
+      case 'breach':
+        hud.showBanner(ev.hard ? 'HARD BREACH' : 'WALL BREACHED',
+          `${ev.panels} panels cleared`, 'atk', 1.2);
+        break;
+      case 'gadget':
+        if (ev.text) hud.showBanner('GADGET', ev.text, null, 1.2);
+        break;
+      default: break;
+    }
+  }
 
   // --- input edges ----------------------------------------------------------
   let prevFire = false;
@@ -82,6 +118,17 @@ function boot() {
     // Drone spot (during prep, attacker).
     if (e.code === 'KeyT' && drone.active) {
       // spotting is automatic; T re-pings (no-op visual handled by HUD).
+    }
+    // Use signature gadget (F). Allowed in PREP (placement) and ACTION.
+    if (e.code === 'KeyF' && round.gadget && (gs.phase === Phase.ACTION || gs.phase === Phase.PREP)) {
+      if (round.spectating || !player.alive) return;
+      const origin = player.getEyePosition();
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      // Aim point on the nearest solid (for placement gadgets).
+      const point = origin.clone().addScaledVector(dir, 2.5);
+      const ok = round.gadget.use({ origin, dir, point, player });
+      if (ok === false) hud.showBanner('GADGET', 'Cannot use here', null, 1.0);
     }
   });
 
@@ -133,13 +180,34 @@ function boot() {
     const humanSpawns = humanSide === Team.ATTACK ? world.spawns.attackers : world.spawns.defenders;
     const hs = humanSpawns[2] || humanSpawns[0];
     player.reset(hs, humanSide === Team.ATTACK ? Math.PI : 0);
+    player.shieldSpeedMul = 1;
 
     // Spawn the AI team.
     spawnEnemies(gs.aiSide);
 
-    // Refill weapon.
+    // --- operator + loadout + signature gadget ---
+    // Default pick: first operator of the human's side (full select UI = Phase 6).
+    const sideKey = humanSide === Team.ATTACK ? Side.ATTACK : Side.DEFEND;
+    const roster = operatorsBySide(sideKey);
+    round.operator = round.pickedFor === sideKey && round.operator?.side === sideKey
+      ? round.operator
+      : roster[0];
+    round.loadout = new Loadout(round.operator);
+    round.loadout.resetUtility();
+
+    // Tune the primary weapon from the operator + attachments and apply it.
+    const baseDef = WEAPON_DEFS[round.operator.primary] || WEAPON_DEFS.AR;
+    weapon.def = round.loadout.tuneWeapon(baseDef);
     weapon.ammo = weapon.def.magSize;
     weapon.reserve = weapon.def.reserve;
+    weapon.reloading = false;
+    fpCam.adsFov = 55 * (weapon.def._adsFovMul || 1);
+
+    // Build the signature gadget.
+    if (round.gadget) round.gadget.cleanup();
+    round.gadget = makeGadget(round.operator.gadget, gadgetCtx);
+    round.gadget?.equip();
+    round.spotted.clear();
 
     // HUD teams (human side shows 1 real + 4 placeholder allies until Phase 5).
     hud.setTeams(5, round.enemies.length, humanSide, gs.aiSide);
@@ -291,6 +359,26 @@ function boot() {
     camera.lookAt(site.pos);
   }
 
+  // --- spotting: reveal tagged enemies (drone, recon, cameras) --------------
+  function applySpotting() {
+    const now = performance.now();
+    // Fold drone spots into the shared map.
+    if (drone.alive) {
+      for (const s of drone.spotted) markSpotted(s.entity, 0.4);
+    }
+    for (const e of round.enemies) {
+      const exp = round.spotted.get(e);
+      const lit = exp && exp > now && e.alive;
+      // Highlight by emissive tint (a stand-in for screen-space markers; the
+      // full HUD ping system arrives in Phase 6).
+      if (e.bodyMat) {
+        if (lit) e.bodyMat.emissive.setHex(0x2e9bff);
+        else if (e._flash <= 0) e.bodyMat.emissive.setHex(0x000000);
+      }
+      if (exp && exp <= now) round.spotted.delete(e);
+    }
+  }
+
   // --- main loop ------------------------------------------------------------
   let fps = 0, frames = 0, fpsAccum = 0, lastFpsTime = performance.now();
 
@@ -302,6 +390,10 @@ function boot() {
       e._respawnT = 999; // keep dead enemies down (no respawn in a round)
       e.update(dt);
     }
+
+    // Signature gadget effects progress every frame (fuses, areas, spotting).
+    if (round.gadget) round.gadget.tick(dt);
+    applySpotting();
 
     if (gs.phase === Phase.PREP && drone.active && input.locked) {
       // Drive the drone.
@@ -324,8 +416,8 @@ function boot() {
       camState.recoilYaw = recoil.yaw;
       fpCam.update(camState, dt);
 
-      // Firing (only in action, only if alive).
-      const canShoot = gs.phase === Phase.ACTION && player.alive && !round.spectating;
+      // Firing (only in action, only if alive, not flash-blinded).
+      const canShoot = gs.phase === Phase.ACTION && player.alive && !round.spectating && !hud.isBlinded;
       const def = weapon.def;
       const firing = input.mouse.left && player.canFire && canShoot;
       const ctx = {
@@ -391,6 +483,11 @@ function boot() {
     const humanAlive = [player.alive, true, true, true, true];
     const aiAlive = round.enemies.map((e) => e.alive);
     hud.setAlive(humanAlive, aiAlive);
+
+    // Signature gadget readout.
+    if (round.gadget) {
+      hud.setGadget(round.gadget.name, round.gadget.charges, round.gadget.ready);
+    }
 
     // Combat HUD readout.
     const ctx = { ads: player.ads, speed01: player.speed01, crouch01: player.crouch01 };

@@ -91,8 +91,16 @@ export class HUD {
         #channel .bar { width:200px; height:5px; background:#222a30; margin:6px auto 0; }
         #channel .bar i { display:block; height:100%; width:0; background:var(--accent-attack); }
         #channel .txt { font-size:12px; letter-spacing:.25em; color:var(--ink); text-transform:uppercase; }
+        #flashblind { position:absolute; inset:0; background:#ffffff; opacity:0;
+                      pointer-events:none; }
+        /* gadget block, above stance bottom-left */
+        #gadget { position:absolute; left:26px; bottom:54px; font-size:12px;
+                  letter-spacing:.18em; color:var(--ink-dim); text-transform:uppercase; }
+        #gadget b { color:var(--ink); }
+        #gadget .charge { color:var(--accent-attack); }
       </style>
       <div id="dmgflash"></div>
+      <div id="flashblind"></div>
       <div id="xhair">
         <div class="dot"></div>
         <div class="l v top"></div><div class="l v bot"></div>
@@ -114,6 +122,7 @@ export class HUD {
         <div class="wname" id="wname">VK-9 CARBINE</div>
         <div class="prompt" id="prompt"></div>
       </div>
+      <div id="gadget"><b id="gname">—</b> <span class="charge" id="gcharge"></span></div>
       <div id="stance">
         <span id="st">STAND</span> · <span class="lean" id="ln">LEAN —</span>
         · <span id="md">HIP</span>
@@ -155,7 +164,12 @@ export class HUD {
     this.channelTxt = el.querySelector('#channel-txt');
     this.channelBar = el.querySelector('#channel-bar');
     this.dmgflash = el.querySelector('#dmgflash');
+    this.flashblind = el.querySelector('#flashblind');
+    this.gnameEl = el.querySelector('#gname');
+    this.gchargeEl = el.querySelector('#gcharge');
     this._dmgTimer = 0;
+    this._blindTimer = 0;
+    this._blindMax = 1;
 
     // Size the hit marker arms once.
     for (const s of [this.hmA, this.hmB]) {
@@ -236,6 +250,21 @@ export class HUD {
   /** Red directional damage flash. */
   flashDamage() { this._dmgTimer = 0.4; }
 
+  /** White-out flash blind, strength 0..1 → up to ~3s of fade. */
+  flashBlind(strength) {
+    const dur = 0.6 + strength * 2.4;
+    this._blindTimer = Math.max(this._blindTimer, dur);
+    this._blindMax = Math.max(this._blindMax, dur);
+  }
+
+  /** Signature gadget readout. */
+  setGadget(name, charges, ready) {
+    this.gnameEl.textContent = name || '—';
+    this.gchargeEl.textContent = charges == null ? '' :
+      (charges > 90 ? '∞' : `×${charges}`) + (ready ? '' : ' …');
+    this.gchargeEl.style.color = ready ? 'var(--accent-attack)' : 'var(--ink-dim)';
+  }
+
   onWeaponEvent(ev) {
     if (ev.type === 'hit') {
       this._hitTimer = 0.12;
@@ -301,7 +330,18 @@ export class HUD {
     } else {
       this.dmgflash.style.boxShadow = 'inset 0 0 120px rgba(255,40,40,0)';
     }
+
+    // Flash-blind decay (full white, then fades).
+    if (this._blindTimer > 0) {
+      this._blindTimer -= dt;
+      this.flashblind.style.opacity = Math.max(0, this._blindTimer / this._blindMax);
+    } else {
+      this.flashblind.style.opacity = 0;
+    }
   }
+
+  /** True while the player is significantly flash-blinded (accuracy penalty). */
+  get isBlinded() { return this._blindTimer > 0.3; }
 
   /** Hide all the in-round combat HUD (used in prep/drone/menus). */
   setCombatVisible(on) {

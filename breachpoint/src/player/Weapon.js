@@ -47,6 +47,49 @@ export const WEAPON_DEFS = {
     falloffEnd: 60, // metres at which damage hits its floor
     falloffFloor: 0.55, // fraction of base damage at long range
   },
+
+  // High-RPM SMG: faster, lower per-shot damage, snappier recoil.
+  SMG: {
+    name: 'TKR-45 VECTOR', rpm: 920, damage: 32, headshotMult: 2.8,
+    magSize: 32, reserve: 128, reloadTime: 2.1,
+    recoilPattern: [
+      [0.007, 0.001], [0.009, -0.002], [0.011, 0.003], [0.012, -0.003],
+      [0.013, 0.004], [0.013, -0.004], [0.014, 0.003], [0.014, -0.005],
+    ],
+    recoilRecover: 11,
+    spread: { base: 0.014, moving: 0.045, adsMul: 0.22, crouchMul: 0.65 },
+    automatic: true, falloffStart: 18, falloffEnd: 42, falloffFloor: 0.45,
+  },
+
+  // Slow, heavy marksman/DMR: high damage, semi-auto.
+  DMR: {
+    name: 'LRS-7 MARKSMAN', rpm: 360, damage: 62, headshotMult: 2.4,
+    magSize: 20, reserve: 80, reloadTime: 2.6,
+    recoilPattern: [[0.022, 0.002], [0.024, -0.003], [0.025, 0.004]],
+    recoilRecover: 7,
+    spread: { base: 0.008, moving: 0.06, adsMul: 0.1, crouchMul: 0.5 },
+    automatic: false, falloffStart: 40, falloffEnd: 80, falloffFloor: 0.7,
+  },
+
+  // Pump shotgun: pellet spread, devastating close, useless far.
+  SHOTGUN: {
+    name: 'M0-12 BREACHER', rpm: 75, damage: 14, headshotMult: 1.6,
+    magSize: 7, reserve: 35, reloadTime: 3.4, pellets: 8,
+    recoilPattern: [[0.05, 0.0]],
+    recoilRecover: 6,
+    spread: { base: 0.06, moving: 0.08, adsMul: 0.7, crouchMul: 0.85 },
+    automatic: false, falloffStart: 6, falloffEnd: 18, falloffFloor: 0.1,
+  },
+
+  // Sidearm pistol.
+  PISTOL: {
+    name: 'P9 SIDEARM', rpm: 450, damage: 34, headshotMult: 2.5,
+    magSize: 15, reserve: 60, reloadTime: 1.7,
+    recoilPattern: [[0.014, 0.002], [0.015, -0.003]],
+    recoilRecover: 12,
+    spread: { base: 0.02, moving: 0.05, adsMul: 0.3, crouchMul: 0.7 },
+    automatic: false, falloffStart: 14, falloffEnd: 34, falloffFloor: 0.4,
+  },
 };
 
 export class Weapon {

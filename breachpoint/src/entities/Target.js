@@ -51,6 +51,11 @@ export class Target {
     this.head.position.set(0, 0.78, 0);
   }
 
+  /** Blind/disorient for `seconds` (used by flash gadgets; bots read this). */
+  applyBlind(seconds) {
+    this.blindT = Math.max(this.blindT || 0, seconds);
+  }
+
   applyDamage(amount, isHead) {
     if (!this.alive) return false;
     this.health -= amount;
@@ -89,6 +94,7 @@ export class Target {
       this._flash -= dt;
       if (this._flash <= 0) this.bodyMat.emissive.setHex(0x000000);
     }
+    if (this.blindT > 0) this.blindT -= dt;
     if (!this.alive) {
       this._respawnT -= dt;
       if (this._respawnT <= 0) this.respawn();

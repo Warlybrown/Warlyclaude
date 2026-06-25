@@ -137,6 +137,8 @@ export class PlayerController {
     if (this.sprinting) speed = SPEED.sprint;
     else if (this.crouch01 > 0.5) speed = SPEED.crouch;
     if (this.ads) speed *= SPEED.adsMul;
+    // Ballistic-shield carry slows movement (set by the shield gadget).
+    if (this.shieldSpeedMul) speed *= this.shieldSpeedMul;
 
     // Build a world-space target velocity from input on the XZ plane.
     const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
