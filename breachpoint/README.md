@@ -19,7 +19,7 @@ Open the printed URL (default http://localhost:5173) in Chrome. **Click the canv
 | Phase | System | State |
 |------:|--------|-------|
 | 0 | Project setup: Vite + Three.js, full-window canvas, DOM HUD overlay, pointer lock, fixed-timestep loop | ✅ done |
-| 1 | Core FPS feel: movement, lean, crouch, ADS, hitscan weapons, recoil | ⏳ next |
+| 1 | Core FPS feel: movement, lean, crouch, ADS, hitscan weapon, recoil, practice arena | ✅ done |
 | 2 | Map + destruction system | — |
 | 3 | Round structure & bomb objective | — |
 | 4 | Operators & gadgets | — |
@@ -51,3 +51,21 @@ framerate-independent simulation; rendering happens once per animation frame.
 ### Input model
 All keyboard/mouse/pointer-lock state lives in `core/Input.js`. Game systems poll
 a snapshot each frame rather than registering their own listeners.
+
+## Controls (Phase 1)
+
+| Action | Bind |
+|--------|------|
+| Move | `W` `A` `S` `D` |
+| Look | Mouse (click canvas to lock) |
+| Fire (auto) | Left Mouse |
+| Aim down sights | Right Mouse (hold) |
+| Reload | `R` |
+| Crouch | `Ctrl` / `C` (hold) |
+| Lean left / right | `Q` / `E` (hold) |
+| Sprint | `Shift` (hold, forward; blocks firing) |
+
+**Feel notes:** movement uses acceleration/friction (no instant snap); the rifle has
+a fixed, learnable recoil pattern you counter by pulling down; spread shrinks when
+still + crouched + aiming and grows while moving; headshots (top of a dummy) are
+lethal. Dummies topple on death and respawn after ~3s.
