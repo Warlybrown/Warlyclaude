@@ -60,6 +60,35 @@ export class PlayerController {
     this._lastLookDelta = { x: 0, y: 0 };
 
     this.alive = true;
+    this.maxHealth = 100;
+    this.health = this.maxHealth;
+    this.lastHitFrom = null; // world pos of last damage source (for dir indicator)
+    this.onDeath = null;
+  }
+
+  /** Apply damage from an optional world-space source position. */
+  takeDamage(amount, fromPos = null) {
+    if (!this.alive) return;
+    this.health -= amount;
+    this.lastHitFrom = fromPos;
+    if (this.health <= 0) {
+      this.health = 0;
+      this.alive = false;
+      if (this.onDeath) this.onDeath();
+    }
+  }
+
+  /** Respawn/reset for a new round at a spawn position. */
+  reset(pos, yaw = Math.PI) {
+    this.position.set(pos.x, pos.y, pos.z);
+    this.velocity.set(0, 0, 0);
+    this.yaw = yaw;
+    this.pitch = 0;
+    this.health = this.maxHealth;
+    this.alive = true;
+    this.crouch01 = 0;
+    this.ads = false;
+    this.sprinting = false;
   }
 
   /** True if the player may fire (not sprinting). */
