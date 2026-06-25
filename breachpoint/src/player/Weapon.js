@@ -16,7 +16,7 @@
 
 import * as THREE from 'three';
 import { clamp, damp, signedRand } from '../util/math.js';
-import { castRay } from '../util/raycast.js';
+import { castRay, castRayAll } from '../util/raycast.js';
 
 // Default archetype: a controllable assault rifle.
 export const WEAPON_DEFS = {
@@ -207,28 +207,61 @@ export class Weapon {
     const origin = new THREE.Vector3();
     this.camera.getWorldPosition(origin);
 
-    // --- hitscan ---
+    // --- hitscan with penetration through soft walls ---
+    // Walk all intersections front-to-back. Soft destructible panels get
+    // punched into holes and the bullet continues at reduced damage; a
+    // structural/hard surface or a hit target stops the ray.
     const candidates = [...this.world.solids, ...this.world.targets.map((t) => t.mesh)];
-    const hit = castRay(origin, dir, candidates, 200);
+    const hits = castRayAll(origin, dir, candidates, 200);
+    let mult = 1;
+    let endPoint = origin.clone().addScaledVector(dir, 100);
+    let penetrations = 0;
+    const MAX_PEN = 3;
 
-    const end = hit ? hit.point.clone() : origin.clone().addScaledVector(dir, 100);
-    this._spawnTracer(origin, end);
-
-    if (hit) {
-      // Map the hit mesh back to a target entity (head-aware).
+    for (const h of hits) {
+      const obj = h.object;
+      // Target?
       const target = this.world.targets.find(
-        (t) => t.mesh === hit.object || hit.object.userData.targetRef === t
+        (t) => t.mesh === obj || obj.userData.targetRef === t
       );
       if (target && target.alive) {
-        const isHead = hit.point.y >= target.headY;
-        const dmg = this._damageAt(hit.distance, isHead);
+        const isHead = h.point.y >= target.headY;
+        const dmg = this._damageAt(h.distance, isHead) * mult;
         const dead = target.applyDamage(dmg, isHead);
-        this.events.push({ type: 'hit', headshot: isHead, killed: dead, dmg });
+        this.events.push({ type: 'hit', headshot: isHead, killed: dead, dmg, target });
         if (dead) this.events.push({ type: 'kill', target });
-      } else {
-        this._spawnSpark(hit.point, hit.normal);
+        endPoint = h.point.clone();
+        break; // bullet stops in the body
       }
+
+      // Destructible panel?
+      const surf = obj.userData.destructible;
+      if (surf) {
+        if (surf.isHardened) {
+          // Reinforced/hard wall: stop, spark, no penetration.
+          this._spawnSpark(h.point, h.face ? h.face.normal : null);
+          endPoint = h.point.clone();
+          break;
+        }
+        // Soft: punch a small hole and keep going with falloff.
+        surf.damageAt(h.point, 0.45);
+        this._spawnSpark(h.point, h.face ? h.face.normal : null);
+        mult *= 0.62; // penetration damage loss
+        penetrations++;
+        if (penetrations >= MAX_PEN || mult < 0.15) {
+          endPoint = h.point.clone();
+          break;
+        }
+        continue;
+      }
+
+      // Solid structural geometry: stop here.
+      this._spawnSpark(h.point, h.face ? h.face.normal.clone().transformDirection(obj.matrixWorld) : null);
+      endPoint = h.point.clone();
+      break;
     }
+
+    this._spawnTracer(origin, endPoint);
 
     // --- recoil kick (apply this shot's pattern entry) ---
     const pat = this.def.recoilPattern;

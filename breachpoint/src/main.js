@@ -17,8 +17,11 @@ import { FirstPersonCamera } from './player/FirstPersonCamera.js';
 import { Weapon, WEAPON_DEFS } from './player/Weapon.js';
 import { Target } from './entities/Target.js';
 import { HUD } from './ui/HUD.js';
+import { MapLoader } from './world/MapLoader.js';
+import { explodeAt } from './world/Destruction.js';
+import housesite, { FLOOR_H } from './world/mapDefs/housesite.js';
 
-const VERSION = '0.2.0 · phase 1';
+const VERSION = '0.3.0 · phase 2';
 
 function boot() {
   const app = document.getElementById('app');
@@ -38,80 +41,33 @@ function boot() {
 
   // --- scene / camera -------------------------------------------------------
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b1a12);
-  scene.fog = new THREE.FogExp2(0x0b1a12, 0.012);
-
   const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 500);
 
-  // --- lighting -------------------------------------------------------------
-  scene.add(new THREE.HemisphereLight(0x90ffb0, 0x0a140d, 0.7));
-  const key = new THREE.DirectionalLight(0xffffff, 1.0);
-  key.position.set(8, 14, 6);
-  key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
-  key.shadow.camera.left = -30; key.shadow.camera.right = 30;
-  key.shadow.camera.top = 30; key.shadow.camera.bottom = -30;
-  scene.add(key);
+  // --- world: load the SAFEHOUSE map ----------------------------------------
+  // MapLoader returns the shared world contract (solids, colliders,
+  // destructibles, sites, spawns, reinforce). We add `targets` for Phase-2
+  // weapon/destruction testing; Phase 5 replaces these with real bots.
+  const mapLoader = new MapLoader(scene);
+  const world = mapLoader.load(housesite);
+  world.targets = [];
 
-  // --- world: practice arena ------------------------------------------------
-  // `solids` are raycast-able meshes (walls/cover); `colliders` are AABBs for
-  // movement; `targets` are damageable dummies. Later phases swap this for the
-  // real map + destruction system but keep the same world contract.
-  const world = { solids: [], colliders: [], targets: [] };
-
-  const matFloor = new THREE.MeshStandardMaterial({ color: 0x12241a, roughness: 1 });
-  const matWall = new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.9 });
-  const matCover = new THREE.MeshStandardMaterial({ color: 0x3a4a3a, roughness: 0.8 });
-
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), matFloor);
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
-  const grid = new THREE.GridHelper(60, 60, 0x2e9bff, 0x143322);
-  grid.material.transparent = true; grid.material.opacity = 0.25;
-  scene.add(grid);
-
-  /** Add a box that is both a visual solid and a movement collider. */
-  function addBox(w, h, d, x, y, z, mat) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    mesh.position.set(x, y, z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    world.solids.push(mesh);
-    const box = new THREE.Box3().setFromObject(mesh);
-    world.colliders.push(box);
-    return mesh;
-  }
-
-  // Perimeter walls.
-  const HW = 25;
-  addBox(2, 4, HW * 2, -HW, 2, 0, matWall);
-  addBox(2, 4, HW * 2, HW, 2, 0, matWall);
-  addBox(HW * 2, 4, 2, 0, 2, -HW, matWall);
-  addBox(HW * 2, 4, 2, 0, 2, HW, matWall);
-
-  // Cover blocks to test lean/crouch peeking.
-  addBox(3, 1.1, 1, -6, 0.55, -4, matCover);
-  addBox(1, 1.7, 4, 4, 0.85, -6, matCover);
-  addBox(2.5, 2.4, 0.5, 0, 1.2, -12, matCover); // tall wall to lean around
-  addBox(1, 1.1, 3, -10, 0.55, -10, matCover);
-  addBox(6, 0.6, 1, 8, 0.3, -2, matCover); // low cover (crouch behind)
-
-  // Dummy targets at varied ranges/heights.
-  const targetSpawns = [
-    new THREE.Vector3(0, 0, -16),
-    new THREE.Vector3(-6, 0, -14),
-    new THREE.Vector3(6, 0, -18),
-    new THREE.Vector3(-12, 0, -8),
-    new THREE.Vector3(10, 0, -12),
-    new THREE.Vector3(0, 0, -22),
+  // A few practice dummies inside the building to test shoot-through-walls.
+  const dummySpawns = [
+    new THREE.Vector3(-8, 0, 0),   // in STORAGE (ground site)
+    new THREE.Vector3(-8, 0, -2),
+    new THREE.Vector3(4, FLOOR_H, 8), // in OFFICE (upper site)
+    new THREE.Vector3(0, 0, -6),
+    new THREE.Vector3(6, 0, 4),
   ];
-  for (const sp of targetSpawns) world.targets.push(new Target(scene, sp));
+  for (const sp of dummySpawns) world.targets.push(new Target(scene, sp));
 
   // --- input / player / camera / weapon -------------------------------------
   const input = new Input(canvas);
   const player = new PlayerController(input, world);
+  // Spawn the player at an attacker exterior spawn, facing the building (-Z).
+  const spawn = world.spawns.attackers[2];
+  player.position.set(spawn.x, spawn.y, spawn.z);
+  player.yaw = Math.PI;
   const fpCam = new FirstPersonCamera(camera, { fov: 80, adsFov: 55 });
   const weapon = new Weapon(WEAPON_DEFS.AR, scene, camera, world);
   const hud = new HUD(ui);
@@ -119,10 +75,22 @@ function boot() {
   lockPrompt.addEventListener('click', () => input.requestLock());
   input.onLockChange((locked) => lockPrompt.classList.toggle('hidden', locked));
 
-  // Reload (R) and semi-auto edge detect handled here.
+  // Reload (R). Phase-2 test keys: F = breach charge ahead, V = reinforce wall.
   let prevFire = false;
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyR') weapon.reload();
+    if (e.code === 'KeyF') {
+      // Throw a "breach" explosion ~2m in front of the eye.
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      const at = camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 2);
+      const n = explodeAt(world, at, 1.6);
+      console.log(`[breach] removed ${n} panels`);
+    }
+    if (e.code === 'KeyV') {
+      const ok = world.reinforce.reinforceNearest(player.position, 4);
+      console.log(`[reinforce] ${ok ? 'reinforced wall' : 'no wall in range'} · ${world.reinforce.remaining} left`);
+    }
   });
 
   // --- resize ---------------------------------------------------------------
