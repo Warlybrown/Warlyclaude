@@ -31,9 +31,9 @@
       <div id="score">0</div>
       <div id="over"></div>
       <hr style="border-color:#313244">
-      <div><span class="k">← →</span> move</div>
-      <div><span class="k">↑</span> rotate</div>
-      <div><span class="k">↓</span> soft drop</div>
+      <div><span class="k">← →</span> / <span class="k">A D</span> move</div>
+      <div><span class="k">↑</span> / <span class="k">W</span> rotate</div>
+      <div><span class="k">↓</span> / <span class="k">S</span> soft drop</div>
       <div><span class="k">space</span> hard drop</div>
       <div><span class="k">R</span> restart</div>
       <hr style="border-color:#313244">
@@ -297,22 +297,30 @@ function tick() {
 
 // ---------- Input ----------
 document.addEventListener('keydown', (e) => {
-  if (e.key.toLowerCase() === 'r') { reset(); return; }
+  const k = e.key.toLowerCase();
+  if (k === 'r') { reset(); return; }
   if (gameOver || !piece) return;
-  if (e.key === 'ArrowLeft'  && !collides(piece.cells, piece.bx - 1, piece.by)) piece.bx--;
-  if (e.key === 'ArrowRight' && !collides(piece.cells, piece.bx + 1, piece.by)) piece.bx++;
-  if (e.key === 'ArrowDown') { if (!collides(piece.cells, piece.bx, piece.by + 1)) piece.by++; }
-  if (e.key === 'ArrowUp') {
+
+  const left  = k === 'arrowleft'  || k === 'a';
+  const right  = k === 'arrowright' || k === 'd';
+  const down  = k === 'arrowdown'  || k === 's';
+  const up   = k === 'arrowup'   || k === 'w';
+  const drop  = e.key === ' ';
+
+  if (left  && !collides(piece.cells, piece.bx - 1, piece.by)) piece.bx--;
+  if (right && !collides(piece.cells, piece.bx + 1, piece.by)) piece.bx++;
+  if (down  && !collides(piece.cells, piece.bx, piece.by + 1)) piece.by++;
+  if (up) {
     const r = rotate(piece.cells);
     if (!collides(r, piece.bx, piece.by)) piece.cells = r;
     else if (!collides(r, piece.bx - 1, piece.by)) { piece.cells = r; piece.bx--; }
     else if (!collides(r, piece.bx + 1, piece.by)) { piece.cells = r; piece.bx++; }
   }
-  if (e.key === ' ') {
+  if (drop) {
     while (!collides(piece.cells, piece.bx, piece.by + 1)) piece.by++;
     settle();
   }
-  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+  if (left || right || up || down || drop) e.preventDefault();
 });
 
 function reset() {
