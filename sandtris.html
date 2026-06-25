@@ -189,7 +189,8 @@ function stepSand() {
 }
 
 // ---------- Line clearing: same color bridging left wall -> right wall ----------
-function clearMatches() {
+// Find (but do NOT remove) every same-color region that bridges both walls.
+function findMatches() {
   const visited = new Uint8Array(COLS * ROWS);
   const toClear = [];
 
@@ -223,10 +224,13 @@ function clearMatches() {
     }
     if (touchesRight) toClear.push(region);
   }
+  return toClear;            // array of regions; each region is an array of grain indices
+}
 
-  if (!toClear.length) return 0;
+// Remove the given regions, award score, and return how many grains were cleared.
+function removeRegions(regions) {
   let cleared = 0;
-  for (const region of toClear) {
+  for (const region of regions) {
     for (const p of region) { grid[p] = 0; shade[p] = 0; cleared++; }
   }
   // score scales super-linearly with the size of the cleared bridge
@@ -235,14 +239,23 @@ function clearMatches() {
 }
 
 // ---------- Rendering ----------
-function draw() {
+function draw(now) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // During a clear, the matched grains blink: hidden for the first half of each
+  // 500ms flash, shown for the second half -> "gone then reappear", 4 times.
+  let hideMask = null;
+  if (flash) {
+    const phase = (now - flash.start) % FLASH_PERIOD;
+    if (phase < FLASH_PERIOD / 2) hideMask = flash.mask;
+  }
   // settled sand
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
-      const col = grid[idx(x, y)];
+      const i = idx(x, y);
+      const col = grid[i];
       if (!col) continue;
-      ctx.fillStyle = tint(COLORS[col], shade[idx(x, y)]);
+      if (hideMask && hideMask[i]) continue;   // grain is in its "gone" flash
+      ctx.fillStyle = tint(COLORS[col], shade[i]);
       ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     }
   }
@@ -273,17 +286,37 @@ function tint(hex, f) {
 let dropTimer = 0;
 const DROP_INTERVAL = 14;   // frames between gravity steps for the active piece
 
+// Flash-before-clear animation state.
+const FLASH_DURATION = 2000; // total ms
+const FLASH_PERIOD   = 500;  // ms per flash (gone + reappear) -> 4 flashes over 2s
+let flash = null;            // { regions, mask, start }  while a clear is animating
+
+// Frame-rate-independent easing: returns the per-frame lerp amount so the glide
+// covers the same fraction per real second regardless of actual frame rate.
+function easeAmt(base, dt) { return 1 - Math.pow(1 - base, dt * 60); }
+
+let lastTime = performance.now();
+
 function tick() {
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05); // clamp big gaps (tab switch)
+  lastTime = now;
+
   if (!gameOver) {
     // sand keeps settling every frame
     stepSand();
 
-    if (piece) {
-      // ease the rendered position toward the logical grid position.
-      // horizontal glides quickly (lively direction changes); vertical
-      // follows a touch slower so the fall reads as continuous, not stepped.
-      piece.rx += (piece.bx - piece.rx) * 0.4;
-      piece.ry += (piece.by - piece.ry) * 0.3;
+    if (flash) {
+      // hold the matched grains in place and blink them; remove when time's up.
+      if (now - flash.start >= FLASH_DURATION) {
+        removeRegions(flash.regions);
+        flash = null;
+      }
+    } else if (piece) {
+      // ease the rendered position toward the logical grid position, smoothly
+      // and at a rate independent of frame timing (so the shift isn't janky).
+      piece.rx += (piece.bx - piece.rx) * easeAmt(0.28, dt);
+      piece.ry += (piece.by - piece.ry) * easeAmt(0.22, dt);
       if (Math.abs(piece.rx - piece.bx) < 0.01) piece.rx = piece.bx;
       if (Math.abs(piece.ry - piece.by) < 0.01) piece.ry = piece.by;
 
@@ -297,14 +330,21 @@ function tick() {
         }
       }
     } else {
-      // wait until sand mostly settles, then clear and spawn
+      // wait until sand mostly settles, then look for matches.
       if (!stepSand()) {
-        clearMatches();
-        if (!stepSand()) spawn();
+        const regions = findMatches();
+        if (regions.length) {
+          // build a quick lookup mask of every grain that will clear, then flash.
+          const mask = new Uint8Array(COLS * ROWS);
+          for (const region of regions) for (const p of region) mask[p] = 1;
+          flash = { regions, mask, start: now };
+        } else if (!stepSand()) {
+          spawn();
+        }
       }
     }
   }
-  draw();
+  draw(now);
   requestAnimationFrame(tick);
 }
 
@@ -338,7 +378,7 @@ document.addEventListener('keydown', (e) => {
 
 function reset() {
   grid.fill(0); shade.fill(0);
-  score = 0; gameOver = false; piece = null; dropTimer = 0;
+  score = 0; gameOver = false; piece = null; dropTimer = 0; flash = null;
   spawn();
 }
 
