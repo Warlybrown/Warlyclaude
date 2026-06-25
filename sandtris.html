@@ -27,6 +27,9 @@
   <div id="wrap">
     <canvas id="c"></canvas>
     <div id="side">
+      <div>NEXT</div>
+      <canvas id="next" width="120" height="120"
+              style="background:#11141d;border:1px solid #313244;margin-bottom:6px"></canvas>
       <div>SCORE</div>
       <div id="score">0</div>
       <div id="over"></div>
@@ -53,6 +56,8 @@ const ROWS = 150;          // grid height in grains
 const BLOCK = 8;           // grains per tetromino square (8x8)
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('next');
+const nextCtx = nextCanvas.getContext('2d');
 canvas.width = COLS * CELL;
 canvas.height = ROWS * CELL;
 
@@ -60,15 +65,12 @@ canvas.height = ROWS * CELL;
 const grid = new Int8Array(COLS * ROWS);
 const idx = (x, y) => y * COLS + x;
 
-// Distinct, well-separated colors so "matching" is meaningful.
+// Three distinct, well-separated colors so "matching" is meaningful.
 const COLORS = [
   null,
   '#f38ba8', // red
-  '#fab387', // orange
-  '#f9e2af', // yellow
   '#a6e3a1', // green
   '#89dceb', // cyan
-  '#cba6f7', // purple
 ];
 
 // Slight per-grain brightness jitter for a sandy texture.
@@ -85,11 +87,21 @@ const SHAPES = [
   [[1,1,0],[0,1,1]],      // Z
 ];
 
-let piece, score, gameOver;
+let piece, next, score, gameOver;
+
+// Roll a fresh {cells, color} for the queue.
+function randomPiece() {
+  return {
+    cells: SHAPES[(Math.random() * SHAPES.length) | 0].map(r => r.slice()),
+    color: 1 + ((Math.random() * (COLORS.length - 1)) | 0),
+  };
+}
 
 function spawn() {
-  const s = SHAPES[(Math.random() * SHAPES.length) | 0].map(r => r.slice());
-  const color = 1 + ((Math.random() * (COLORS.length - 1)) | 0);
+  if (!next) next = randomPiece();
+  const { cells: s, color } = next;
+  next = randomPiece();      // refill the preview
+  drawNext();
   const startX = Math.floor((COLS / BLOCK - s[0].length) / 2);
   const startY = -s.length;
   piece = {
@@ -273,6 +285,22 @@ function draw(now) {
   document.getElementById('over').textContent = gameOver ? 'GAME OVER — press R' : '';
 }
 
+// Render the upcoming piece into the preview canvas, centered and scaled to fit.
+function drawNext() {
+  nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+  if (!next) return;
+  const { cells, color } = next;
+  const w = cells[0].length, h = cells.length;
+  const cell = Math.floor(Math.min(nextCanvas.width, nextCanvas.height) / 5);
+  const ox = (nextCanvas.width  - w * cell) / 2;
+  const oy = (nextCanvas.height - h * cell) / 2;
+  nextCtx.fillStyle = COLORS[color];
+  for (let r = 0; r < h; r++)
+    for (let c = 0; c < w; c++)
+      if (cells[r][c])
+        nextCtx.fillRect(ox + c * cell, oy + r * cell, cell - 1, cell - 1);
+}
+
 // multiply a hex color by a brightness factor
 function tint(hex, f) {
   const n = parseInt(hex.slice(1), 16);
@@ -287,8 +315,8 @@ let dropTimer = 0;
 const DROP_INTERVAL = 14;   // frames between gravity steps for the active piece
 
 // Flash-before-clear animation state.
-const FLASH_DURATION = 2000; // total ms
-const FLASH_PERIOD   = 500;  // ms per flash (gone + reappear) -> 4 flashes over 2s
+const FLASH_DURATION = 1000; // total ms
+const FLASH_PERIOD   = 500;  // ms per flash (gone + reappear) -> 2 flashes over 1s
 let flash = null;            // { regions, mask, start }  while a clear is animating
 
 // Frame-rate-independent easing: returns the per-frame lerp amount so the glide
@@ -378,7 +406,7 @@ document.addEventListener('keydown', (e) => {
 
 function reset() {
   grid.fill(0); shade.fill(0);
-  score = 0; gameOver = false; piece = null; dropTimer = 0; flash = null;
+  score = 0; gameOver = false; piece = null; next = null; dropTimer = 0; flash = null;
   spawn();
 }
 
