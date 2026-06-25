@@ -29,6 +29,8 @@ import { makeGadget } from './operators/gadgets/index.js';
 import { Navmesh } from './world/Navmesh.js';
 import { Bot } from './entities/Bot.js';
 import { BotBrain } from './entities/BotBrain.js';
+import { AudioManager } from './core/Audio.js';
+import { Menu } from './ui/Menu.js';
 
 const VERSION = '0.6.0 · phase 5';
 
@@ -67,14 +69,15 @@ function boot() {
   // bots can path from their outdoor spawns through the doorways.
   const nav = new Navmesh(world, { spacing: 2.0, bounds: { minX: -15, maxX: 15, minZ: -15, maxZ: 25 } });
 
-  // Difficulty (0..1) — surfaced in the Phase 7 settings menu.
-  const settings = { difficulty: 0.5 };
+  // Player-facing settings (surfaced in the menu). Difficulty drives bot skill.
+  const settings = { difficulty: 0.5, sensitivity: 1.0, fov: 80, volume: 0.6 };
+  const audio = new AudioManager();
 
   // --- core objects ---------------------------------------------------------
   const input = new Input(canvas);
   const player = new PlayerController(input, world);
   const fpCam = new FirstPersonCamera(camera, { fov: 80, adsFov: 55 });
-  const weapon = new Weapon(WEAPON_DEFS.AR, scene, camera, world);
+  const weapon = new Weapon(WEAPON_DEFS.AR, scene, camera, world, audio);
   const hud = new HUD(ui);
   const opSelect = new OperatorSelect(ui);
   const killFeed = new KillFeed(ui);
@@ -84,8 +87,53 @@ function boot() {
   const drone = new Drone(scene, world, droneCamera);
   const gs = new GameState({ roundsToWin: 4, maxRounds: 7, humanStartSide: Team.ATTACK });
 
-  lockPrompt.addEventListener('click', () => { input.requestLock(); if (gs.phase === Phase.MENU) gs.startMatch(); });
-  input.onLockChange((locked) => lockPrompt.classList.toggle('hidden', locked));
+  // --- main menu + settings -------------------------------------------------
+  const menu = new Menu(ui, settings);
+  function applySettings() {
+    player.sensitivity = 0.0022 * settings.sensitivity;
+    fpCam.baseFov = settings.fov;
+    audio.setVolume(settings.volume);
+  }
+  menu.onSettingsChange = applySettings;
+  menu.onStart = () => {
+    menu.hide();
+    applySettings();
+    audio.resume();
+    gs.startMatch();
+    input.requestLock();
+    audio.play('roundStart');
+  };
+  // Hide the boot lock-prompt; the menu owns the entry flow now.
+  lockPrompt.classList.add('hidden');
+  // While a match is live, clicking the canvas re-acquires pointer lock; the
+  // boot prompt doubles as a "click to resume" hint when unlocked mid-match.
+  canvas.addEventListener('click', () => { if (gs.phase !== Phase.MENU && !menu.visible) input.requestLock(); });
+  input.onLockChange((locked) => {
+    if (gs.phase !== Phase.MENU && !menu.visible) lockPrompt.classList.toggle('hidden', locked);
+  });
+  // Esc opens settings (pointer unlocks automatically); Esc again / Back resumes.
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Escape' && gs.phase !== Phase.MENU) {
+      menu.show('settings', true);
+    }
+  });
+
+  // Audio occlusion: muffle sounds heard through walls (low-pass).
+  const _occRay = new THREE.Raycaster();
+  audio.occlusionTest = (pos) => {
+    const from = audio.listenerPos;
+    const dir = new THREE.Vector3().subVectors(pos, from);
+    const dist = dir.length();
+    if (dist < 0.6) return false;
+    dir.normalize();
+    _occRay.set(from, dir);
+    _occRay.far = dist - 0.4;
+    return _occRay.intersectObjects(world.solids, true).length > 0;
+  };
+
+  // --- screen shake (explosions, breaches, taking damage) -------------------
+  let shakeAmt = 0;
+  const addShake = (a) => { shakeAmt = Math.min(1, shakeAmt + a); };
 
   // --- per-round mutable state ----------------------------------------------
   const round = {
@@ -114,7 +162,7 @@ function boot() {
   // Shared context handed to gadgets (uniform API). onEvent routes gameplay
   // events (spotting, flash, breach) back into the orchestrator/HUD.
   const gadgetCtx = {
-    scene, world, player, drone, audio: null,
+    scene, world, player, drone, audio,
     onEvent: (ev) => handleGadgetEvent(ev),
   };
 
@@ -132,6 +180,7 @@ function boot() {
       case 'breach':
         hud.showBanner(ev.hard ? 'HARD BREACH' : 'WALL BREACHED',
           `${ev.panels} panels cleared`, 'atk', 1.2);
+        addShake(ev.hard ? 0.6 : 0.3);
         break;
       case 'gadget':
         if (ev.text) hud.showBanner('GADGET', ev.text, null, 1.2);
@@ -325,6 +374,7 @@ function boot() {
       const sideKey = gs.humanSide === Team.ATTACK ? Side.ATTACK : Side.DEFEND;
       opSelect.show(operatorsBySide(sideKey), gs.humanSide, gs.round,
         gs.score.human, gs.score.ai, round.operator);
+      if (gs.round > 1) audio.play('roundStart');
     }
     if (phase === Phase.PREP) {
       hud.hideBanner();
@@ -361,17 +411,28 @@ function boot() {
       const r = gs.lastRound;
       const won = r.winner === 'human';
       hud.setCombatVisible(false);
+      hud.setChannel('', null);
+      opSelect.hide(); droneUI.hide();
       hud.showBanner(
         won ? 'ROUND WON' : 'ROUND LOST',
         `${r.side} — ${r.reason}`,
         r.side === Team.ATTACK ? 'atk' : 'def', 0
       );
+      audio.play(won ? 'win' : 'lose');
     }
     if (phase === Phase.MATCH_END) {
       const won = gs.matchWinner === 'human';
       hud.setCombatVisible(false);
+      opSelect.hide(); droneUI.hide();
+      // MVP = the human-team member with the most kills.
+      const team = [{ name: round.operator?.callsign || 'YOU', k: player.kills },
+        ...round.allies.map((a) => ({ name: a.operator?.callsign, k: a.kills }))];
+      const mvp = team.sort((a, b) => b.k - a.k)[0];
       hud.showBanner(won ? 'VICTORY' : 'DEFEAT',
-        `FINAL ${gs.score.human} — ${gs.score.ai}`, won ? 'atk' : 'def', 0);
+        `FINAL ${gs.score.human} — ${gs.score.ai} · MVP ${mvp.name} (${mvp.k})`, won ? 'atk' : 'def', 0);
+      audio.play(won ? 'win' : 'lose');
+      // Return to menu shortly so another match can be started.
+      setTimeout(() => { if (gs.phase === Phase.MATCH_END) menu.show('title'); }, 5000);
     }
   });
 
@@ -382,9 +443,10 @@ function boot() {
     // Bomb timers.
     bomb.update(dt);
     for (const ev of bomb.drainEvents()) {
-      if (ev.type === 'planted') hud.showBanner('DEFUSER PLANTED', round.chosenSite?.name || '', 'atk', 2);
-      if (ev.type === 'detonated') gs.endRound(humanAttack ? 'human' : 'ai', 'Defuser detonated');
-      if (ev.type === 'disabled') gs.endRound(humanAttack ? 'ai' : 'human', 'Defuser disabled');
+      if (ev.type === 'planted') { hud.showBanner('DEFUSER PLANTED', round.chosenSite?.name || '', 'atk', 2); audio.play('plant', bomb.mesh.position); }
+      if (ev.type === 'beep') audio.play('beep', bomb.mesh.position);
+      if (ev.type === 'detonated') { audio.play('breach', bomb.mesh.position); addShake(1); gs.endRound(humanAttack ? 'human' : 'ai', 'Defuser detonated'); }
+      if (ev.type === 'disabled') { audio.play('defuse', bomb.mesh.position); gs.endRound(humanAttack ? 'ai' : 'human', 'Defuser disabled'); }
     }
 
     // --- human channeling (plant if attacker, disable if defender) ---
@@ -552,6 +614,14 @@ function boot() {
     // Sound events are pruned each tick so hearing stays "fresh".
     if (gs.phase === Phase.ACTION) {
       for (const b of world.bots) b.update(dt);
+      // Play freshly-created bot sound events positionally (occlusion-aware).
+      for (const s of world.soundEvents) {
+        if (s.played) continue;
+        s.played = true;
+        if (s.type === 'shot') audio.play('shot', s.pos);
+        else if (s.type === 'step') audio.play('step', s.pos);
+        else if (s.type === 'breach') { audio.play('breach', s.pos); addShake(0.25); }
+      }
       if (world.soundEvents.length > 64) world.soundEvents.splice(0, world.soundEvents.length - 64);
       pollDeaths();
       // Damage-direction indicator when the player's health drops.
@@ -559,6 +629,7 @@ function boot() {
         const to = player.lastHitFrom.clone().sub(player.position);
         const ang = Math.atan2(to.x, -to.z) - player.yaw; // relative to facing
         hud.setDamageDir(ang);
+        addShake(0.25);
       }
       _prevHealth = player.health;
     }
@@ -606,6 +677,16 @@ function boot() {
 
     // Per-phase logic.
     if (gs.phase === Phase.ACTION) updateAction(dt);
+
+    // Audio listener follows the active camera; apply + decay screen shake.
+    audio.setListener(round.activeCamera);
+    if (shakeAmt > 0) {
+      const s = shakeAmt * shakeAmt * 0.25;
+      round.activeCamera.position.x += (Math.random() * 2 - 1) * s;
+      round.activeCamera.position.y += (Math.random() * 2 - 1) * s;
+      round.activeCamera.position.z += (Math.random() * 2 - 1) * s;
+      shakeAmt = Math.max(0, shakeAmt - dt * 2.2);
+    }
 
     // HUD.
     updateHud(dt);
@@ -708,7 +789,10 @@ function boot() {
   }
   requestAnimationFrame(sampleFps);
 
-  const game = { THREE, renderer, scene, camera, input, loop, player, weapon, world, hud, gs, bomb, drone, round, nav, settings, OPERATORS, FLOOR_H };
+  // Open on the main menu.
+  menu.show('title');
+
+  const game = { THREE, renderer, scene, camera, input, loop, player, weapon, world, hud, gs, bomb, drone, round, nav, settings, audio, menu, OPERATORS, FLOOR_H };
   window.__BREACHPOINT__ = game;
   statusEl.textContent = `WARL 5 SIEGE · ${VERSION}\nready · click to start`;
   console.log('[BREACHPOINT] phase 3 boot complete', VERSION);

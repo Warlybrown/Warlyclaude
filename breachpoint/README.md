@@ -20,12 +20,42 @@ Open the printed URL (default http://localhost:5173) in Chrome. **Click the canv
 |------:|--------|-------|
 | 0 | Project setup: Vite + Three.js, full-window canvas, DOM HUD overlay, pointer lock, fixed-timestep loop | ✅ done |
 | 1 | Core FPS feel: movement, lean, crouch, ADS, hitscan weapon, recoil, practice arena | ✅ done |
-| 2 | Map + destruction system | — |
-| 3 | Round structure & bomb objective | — |
-| 4 | Operators & gadgets | — |
-| 5 | Bot AI | — |
-| 6 | UI / HUD | — |
-| 7 | Audio, polish & juice | — |
+| 2 | Map (SAFEHOUSE) + layered destruction system | ✅ done |
+| 3 | Round structure, bomb objective, drone phase, spectator | ✅ done |
+| 4 | Operators & gadgets (10 originals + attachments) | ✅ done |
+| 5 | Bot AI: navmesh, perception, behaviour FSM, 5v5 | ✅ done |
+| 6 | UI / HUD: operator select, kill feed, scoreboard, drone UI, markers | ✅ done |
+| 7 | Audio (positional Web Audio), screen shake, menu + settings | ✅ done |
+
+## How to play
+
+1. `npm run dev`, open the URL in Chrome, click **PLAY VS BOTS** → pick a mode.
+2. **Operator Select** (15s): click an operator card, then `ENTER` to ready up.
+3. **Prep** (45s): if attacking, drive the **recon drone** to scout; if defending,
+   `V` to reinforce walls and `F` to place gadgets near the site.
+4. **Action** (3:00): attackers breach in and plant the defuser (`G` in a site,
+   hold ~7s), then protect it for 45s. Defenders hold both sites; after a plant,
+   hold `G` on the device to disable it. No respawns — on death you spectate a
+   teammate. First team to 4 rounds wins; sides swap each round.
+
+## Controls
+
+| Action | Bind | | Action | Bind |
+|--------|------|-|--------|------|
+| Move | `W` `A` `S` `D` | | Fire | Left Mouse |
+| Look | Mouse | | Aim (ADS) | Right Mouse (hold) |
+| Sprint | `Shift` | | Reload | `R` |
+| Crouch | `Ctrl` / `C` | | Signature gadget | `F` |
+| Lean L/R | `Q` / `E` | | Plant / Defuse | `G` (hold) |
+| Reinforce (prep) | `V` | | Scoreboard | `Tab` (hold) |
+| Ready up / skip | `Enter` | | Settings / pause | `Esc` |
+
+## Operators (all original)
+
+**Attackers** — RAMROD (hard breach), EMBER (flash), ORACLE (sonar scan),
+MAUL (silent breach), AEGIS (ballistic shield).
+**Defenders** — BRAMBLE (proximity trap), STATIC (drone jammer), WARDEN
+(deployable camera), RIPOST (reactive countermine), BULWARK (bulletproof cover).
 
 ## Architecture
 
